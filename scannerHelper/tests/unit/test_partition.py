@@ -231,3 +231,106 @@ def test_build_partition_context_lakehouse_mode_threads_resolved_fields():
     assert ctx.source_workspace_id == WS_A
     assert ctx.source_lakehouse_id == LH_X
     assert ctx.ws_dated_base == ""  # flat layout
+
+
+# --- Universal path-GUID extraction (PR #_ feature) -------------------------
+
+def test_scan_row_universal_path_guid_extraction_in_flat_layout():
+    """Even in the default 'flat' layout, a path like
+    notebook_exports/<guid>/<datestamp>/<file> should stamp the
+    finding with the GUID from the path, not the source workspace.
+    """
+    ctx = _ctx(source_layout="flat")  # the default
+    file_path = (
+        f"abfss://lh/{LH_X}/Files/notebook_exports/{WS_B}/20262205/test.txt"
+    )
+    rows = scan_row(file_path, b'{"cells":[],"nbformat":4}', ctx)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["workspace_id"] == WS_B
+    assert r["workspace_name"] == "Beta"
+    assert r["source_dated_partition"] == "20262205"
+
+
+def test_scan_row_workspace_name_falls_back_to_guid_when_unknown():
+    """When the extracted GUID is not in ws_name_by_id, workspace_name
+    must be the GUID itself (NOT empty / None / the source default)."""
+    unknown_ws = "99999999-9999-9999-9999-999999999999"
+    ctx = _ctx(
+        source_layout="flat",
+        source_workspace_id="DEFAULT",
+        source_workspace_name="DEFAULT-NAME",
+    )
+    file_path = (
+        f"abfss://lh/Files/notebook_exports/{unknown_ws}/20260101/x.txt"
+    )
+    rows = scan_row(file_path, b'{"cells":[],"nbformat":4}', ctx)
+    assert rows[0]["workspace_id"] == unknown_ws
+    assert rows[0]["workspace_name"] == unknown_ws
+
+
+def test_scan_row_no_guid_in_path_keeps_ctx_defaults():
+    """No /<guid>/<date>/ pattern -> ctx defaults stay."""
+    ctx = _ctx(source_workspace_id="DEFAULT", source_workspace_name="DefName")
+    rows = scan_row("abfss://lh/Files/random/x.ipynb",
+                    b'{"cells":[],"nbformat":4}', ctx)
+    assert rows[0]["workspace_id"] == "DEFAULT"
+    assert rows[0]["workspace_name"] == "DefName"
+    assert rows[0]["source_dated_partition"] is None
+
+
+def test_scan_row_universal_extraction_ignores_non_date_folder():
+    """The folder after the GUID must look date-like (>=8 digits).
+    Otherwise we leave the workspace defaults alone."""
+    ctx = _ctx(source_workspace_id="DEFAULT", source_workspace_name="DefName")
+    path = f"abfss://lh/{LH_X}/Files/notebook_exports/{WS_B}/Files/x.txt"
+    rows = scan_row(path, b'{"cells":[],"nbformat":4}', ctx)
+    # 'Files' doesn't look like a date so universal regex shouldn't match
+    assert rows[0]["workspace_id"] == "DEFAULT"
+
+
+def test_scan_row_ws_dated_takes_priority_over_universal():
+    """ws_dated_base anchor is the most specific match, so it wins
+    even if a universal /<guid>/<date>/ also appears later in the path."""
+    base = "abfss://lh/Files/scans"
+    ctx = _ctx(
+        source_layout="ws_dated",
+        ws_dated_base=base,
+        source_workspace_id="DEFAULT",
+    )
+    # Path matches BOTH the ws_dated_base anchor AND has a later GUID/date.
+    other_ws = "44444444-4444-4444-4444-444444444444"
+    path = f"{base}/{WS_B}/20260522093015/sub/{other_ws}/20270101/x.txt"
+    rows = scan_row(path, b'{"cells":[],"nbformat":4}', ctx)
+    # ws_dated anchor should pick the first /<x>/<y>/ pair after base
+    assert rows[0]["workspace_id"] == WS_B
+    assert rows[0]["source_dated_partition"] == "20260522093015"
+
+
+def test_scan_row_universal_extraction_yyyymmddhhmmss_format():
+    """The datestamp can be longer than 8 digits (yyyymmddhhmmss etc.)."""
+    ctx = _ctx(source_layout="flat")
+    long_date = "20260522134701"
+    path = f"abfss://lh/Files/notebook_exports/{WS_B}/{long_date}/x.ipynb"
+    rows = scan_row(path, b'{"cells":[],"nbformat":4}', ctx)
+    assert rows[0]["workspace_id"] == WS_B
+    assert rows[0]["source_dated_partition"] == long_date
+
+
+def test_extract_workspace_from_path_helper():
+    """The path helper itself, exercised independently of Spark."""
+    from fabric_scanner.paths import extract_workspace_from_path
+    wid, dt = extract_workspace_from_path(
+        f"abfss://lh/{LH_X}/Files/notebook_exports/{WS_B}/20262205/test.txt"
+    )
+    assert wid == WS_B
+    assert dt == "20262205"
+    # No match
+    assert extract_workspace_from_path(
+        "abfss://lh/Files/regular/x.txt") == (None, None)
+    # Non-date second segment
+    assert extract_workspace_from_path(
+        f"abfss://lh/{LH_X}/Files/{WS_B}/notdate/x.txt") == (None, None)
+    # Empty / None
+    assert extract_workspace_from_path("") == (None, None)
+    assert extract_workspace_from_path(None) == (None, None)  # type: ignore[arg-type]

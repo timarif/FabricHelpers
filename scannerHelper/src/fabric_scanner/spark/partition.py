@@ -27,6 +27,7 @@ from ..engine.extract import extract_attached_lakehouse
 from ..engine.resolve import resolve_dest_workspace
 from ..engine.scanner import scan_notebook_bytes
 from ..config import ScannerConfig
+from ..paths import PATH_GUID_DATE_RE
 from .context import PartitionContext
 from .schema import RESULT_COLUMNS
 
@@ -164,19 +165,42 @@ def scan_row(
     scanned_at = now or datetime.now(timezone.utc)
     cfg = _engine_config_from_ctx(ctx)
 
-    # Per-row workspace + datestamp when ws_dated; otherwise ctx defaults.
+    # Per-row workspace + datestamp.
+    #
+    # Priority order:
+    #   1. ws_dated_base anchor (when source_layout='ws_dated' and the
+    #      base path resolves) — most specific.
+    #   2. Universal '<anywhere>/<guid>/<datestamp>/' match — fires for
+    #      any layout, including the default 'flat'. Covers
+    #      notebook_exports/<guid>/<date>/<file> structures.
+    #   3. ctx.source_workspace_id default (the source lakehouse's host
+    #      workspace) — when no path pattern matches.
+    #
+    # workspace_name falls back to the GUID when the workspace map has
+    # no friendly name for that id (lakehouse mode without API enum).
     wid     = ctx.source_workspace_id
     wname   = ctx.source_workspace_name or ctx.source_workspace_id
     dated   = None
-    if ctx.source_layout == "ws_dated" and ctx.ws_dated_base:
-        m = re.search(
-            re.escape(ctx.ws_dated_base) + r"/([^/]+)/([^/]+)/",
-            path or "",
-        )
-        if m:
-            wid = m.group(1) or wid
-            dated = m.group(2) or None
-            wname = ctx.ws_name_by_id.get((wid or "").lower(), wid)
+    if path:
+        extracted_wid: str | None = None
+        extracted_date: str | None = None
+        if ctx.source_layout == "ws_dated" and ctx.ws_dated_base:
+            m = re.search(
+                re.escape(ctx.ws_dated_base) + r"/([^/]+)/([^/]+)/",
+                path,
+            )
+            if m:
+                extracted_wid = m.group(1) or None
+                extracted_date = m.group(2) or None
+        if not extracted_wid:
+            m2 = PATH_GUID_DATE_RE.search(path)
+            if m2:
+                extracted_wid = m2.group(1)
+                extracted_date = m2.group(2)
+        if extracted_wid:
+            wid = extracted_wid
+            wname = ctx.ws_name_by_id.get(wid.lower(), wid) or wid
+            dated = extracted_date
 
     nb_id = path or ""
     nb_name = (path or "").rsplit("/", 1)[-1]
