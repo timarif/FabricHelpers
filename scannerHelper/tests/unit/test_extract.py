@@ -136,3 +136,201 @@ def test_attached_lakehouse_known_lakehouses_fallback():
     content = _ipynb([{"cell_type": "code", "source": "x"}], meta)
     info = extract_attached_lakehouse(content, "a.ipynb")
     assert info["attached_lakehouse_id"] == "fallback-lh"
+
+# -----------------------------------------------------------------
+# Fabric notebook source-export format (`.py` with `# META {...}`)
+# -----------------------------------------------------------------
+
+FABRIC_PY_SAMPLE = """\
+# Fabric notebook source
+
+# METADATA ********************
+
+# META {
+# META   "kernel_info": {
+# META     "name": "synapse_pyspark"
+# META   },
+# META   "dependencies": {
+# META     "lakehouse": {
+# META       "default_lakehouse": "cb9fac32-f954-42b3-858a-7fd14458f26a",
+# META       "default_lakehouse_name": "rawlakehouse",
+# META       "default_lakehouse_workspace_id": "b72cdac7-93af-4903-9d2a-14d3e635674d",
+# META       "known_lakehouses": [
+# META         {
+# META           "id": "cb9fac32-f954-42b3-858a-7fd14458f26a"
+# META         }
+# META       ]
+# META     },
+# META     "environment": {
+# META       "environmentId": "7711d72e-a934-4f45-b330-0a2e04c4ee9d",
+# META       "workspaceId": "a9fbdebe-644c-4a6b-a4a9-47c1373f4572"
+# META     }
+# META   }
+# META }
+
+# CELL ********************
+
+# Read a Delta table
+import polars as pl
+df = pl.read_delta("abfss://rawdata@onelake.dfs.fabric.microsoft.com/rawlakehouse.Lakehouse/Tables/dimension_employee", columns=["EmployeeKey"])
+
+df.write_delta("abfss://rawdata@onelake.dfs.fabric.microsoft.com/rawlakehouse.Lakehouse/Tables/test1234")
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+"""
+
+
+def test_attached_lakehouse_from_fabric_py_source():
+    info = extract_attached_lakehouse(FABRIC_PY_SAMPLE.encode("utf-8"), "notebook-content.py")
+    assert info["attached_lakehouse_id"] == "cb9fac32-f954-42b3-858a-7fd14458f26a"
+    assert info["attached_lakehouse_name"] == "rawlakehouse"
+    assert info["attached_lakehouse_workspace_id"] == "b72cdac7-93af-4903-9d2a-14d3e635674d"
+    assert info["attached_lakehouse_workspace_name"] is None
+
+
+def test_extract_blocks_fabric_py_source_splits_cells():
+    blocks = extract_blocks(FABRIC_PY_SAMPLE.encode("utf-8"), "notebook-content.py")
+    assert len(blocks) == 1
+    text, idx, kind, part_path = blocks[0]
+    assert kind == "code"
+    assert idx == 0
+    assert part_path == ""
+    assert "# META" not in text
+    assert "import polars" in text
+    assert "write_delta" in text
+
+
+def test_extract_blocks_fabric_py_multiple_cells():
+    multi = """\
+# Fabric notebook source
+
+# METADATA ********************
+
+# META {
+# META   "dependencies": {
+# META     "lakehouse": {
+# META       "default_lakehouse": "lh-1",
+# META       "default_lakehouse_name": "Bronze"
+# META     }
+# META   }
+# META }
+
+# CELL ********************
+
+x = 1
+
+# METADATA ********************
+
+# META { "language": "python" }
+
+# CELL ********************
+
+y = 2
+
+# METADATA ********************
+
+# META { "language": "python" }
+"""
+    blocks = extract_blocks(multi.encode("utf-8"), "nb.py")
+    assert [b[1] for b in blocks] == [0, 1]
+    assert [b[2] for b in blocks] == ["code", "code"]
+    assert blocks[0][0].strip() == "x = 1"
+    assert blocks[1][0].strip() == "y = 2"
+
+
+def test_extract_blocks_fabric_py_with_markdown_cell():
+    src = """\
+# Fabric notebook source
+
+# METADATA ********************
+
+# META { "dependencies": {} }
+
+# MARKDOWN ********************
+
+# # Heading
+#
+# Some text with a link to https://example.com
+
+# CELL ********************
+
+x = 1
+"""
+    blocks = extract_blocks(src.encode("utf-8"), "nb.py", include_md_and_outputs=True)
+    kinds = [b[2] for b in blocks]
+    assert "markdown" in kinds and "code" in kinds
+    md = [b[0] for b in blocks if b[2] == "markdown"][0]
+    assert md.startswith("# Heading")
+    assert "https://example.com" in md
+
+
+def test_extract_blocks_fabric_py_markdown_suppressed():
+    src = """\
+# Fabric notebook source
+
+# METADATA ********************
+
+# META { "dependencies": {} }
+
+# MARKDOWN ********************
+
+# # Heading
+
+# CELL ********************
+
+x = 1
+"""
+    blocks = extract_blocks(src.encode("utf-8"), "nb.py", include_md_and_outputs=False)
+    assert [b[2] for b in blocks] == ["code"]
+
+
+def test_plain_py_without_fabric_header_unchanged():
+    blocks = extract_blocks(b"x = 1\nprint(x)\n", "regular.py")
+    assert blocks == [("x = 1\nprint(x)\n", 0, "code", "")]
+
+
+def test_attached_lakehouse_plain_py_returns_empty():
+    info = extract_attached_lakehouse(b"x = 1", "regular.py")
+    assert info == {
+        "attached_lakehouse_id": None,
+        "attached_lakehouse_name": None,
+        "attached_lakehouse_workspace_id": None,
+        "attached_lakehouse_workspace_name": None,
+    }
+
+
+def test_attached_lakehouse_fabric_py_inside_item_json_parts():
+    inner_py = FABRIC_PY_SAMPLE
+    outer = json.dumps({
+        "definition": {
+            "parts": [
+                {"path": "notebook-content.py",
+                 "payload": base64.b64encode(inner_py.encode("utf-8")).decode("ascii")},
+            ],
+        },
+    }).encode("utf-8")
+    info = extract_attached_lakehouse(outer, "item.json")
+    assert info["attached_lakehouse_id"] == "cb9fac32-f954-42b3-858a-7fd14458f26a"
+    assert info["attached_lakehouse_name"] == "rawlakehouse"
+
+
+def test_extract_blocks_fabric_py_inside_item_json_parts():
+    inner_py = FABRIC_PY_SAMPLE
+    outer = json.dumps({
+        "definition": {
+            "parts": [
+                {"path": "notebook-content.py",
+                 "payload": base64.b64encode(inner_py.encode("utf-8")).decode("ascii")},
+            ],
+        },
+    }).encode("utf-8")
+    blocks = extract_blocks(outer, "item.json")
+    code_texts = [b[0] for b in blocks if b[2] == "code"]
+    assert any("import polars" in t for t in code_texts)
+    assert all(b[3] == "notebook-content.py" for b in blocks)
+    assert all("# META" not in b[0] for b in blocks if b[2] == "code")
