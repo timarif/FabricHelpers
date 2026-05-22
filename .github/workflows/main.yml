@@ -223,7 +223,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Bump _version.py and regenerate notebook
+      - name: Install [dev] extras (so notebook regen matches build verify)
+        if: steps.gate.outputs.should_run == 'true' && steps.idempotent.outputs.skip == 'false'
+        working-directory: scannerHelper
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Bump _version.py and regenerate notebooks
         if: steps.gate.outputs.should_run == 'true' && steps.idempotent.outputs.skip == 'false'
         working-directory: scannerHelper
         env:
@@ -252,8 +259,11 @@ jobs:
           NEW_VERSION: ${{ steps.compute.outputs.version }}
         run: |
           set -euo pipefail
-          git add scannerHelper/src/fabric_scanner/_version.py \
-                  scannerHelper/notebooks/fabric_scanner_v2.ipynb
+          # Stage _version.py and EVERY notebook that build_notebook.py emits
+          # (currently fabric_scanner_v2.ipynb + fabric_scanner_ai_v1.ipynb,
+          # but glob future-proofs against new notebook targets).
+          git add scannerHelper/src/fabric_scanner/_version.py
+          git add scannerHelper/notebooks/*.ipynb
           if git diff --cached --quiet; then
             echo "::notice::No file changes to commit; tagging current HEAD."
           else
