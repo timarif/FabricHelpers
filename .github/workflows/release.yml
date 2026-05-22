@@ -1,18 +1,25 @@
 name: release
 
-# Builds and publishes fabric-scanner whenever a vX.Y.Z tag is pushed.
+# Publishes fabric-scanner whenever a `vX.Y.Z` tag is pushed.
 #
-# Workflow:
-#   1. Run the unit tests as a release gate.
-#   2. Verify the tag (vX.Y.Z) matches the version in _version.py.
-#   3. Build the wheel + sdist.
-#   4. Create a GitHub Release for the tag with auto-generated notes
-#      and the two artifacts attached.
+# Two-job flow:
+#   1. `build` — calls the reusable build.yml workflow, which runs the
+#      unit tests, builds the wheel + sdist, smoke-tests the wheel in
+#      a clean venv, and uploads the artifacts under the name `dist`.
+#   2. `release` — gated on `needs: build`. Checks out the same ref,
+#      verifies the tag matches `_version.py`, downloads the artifact
+#      produced by job 1, and creates a GitHub Release with both files
+#      attached and auto-generated notes.
 #
-# To cut a release after this lands:
-#     git tag -a v0.3.2 -m "fabric-scanner v0.3.2"
-#     git push origin v0.3.2
-# The action does the rest.
+# The release publishes the *same* artifact that was tested and
+# smoke-tested in this run — there is no separate "build for release"
+# path that could drift from CI.
+#
+# To cut a release:
+#     git tag -a v0.3.3 -m "fabric-scanner v0.3.3"
+#     git push origin v0.3.3
+# The workflow does the rest. You can also re-run manually from the
+# Actions tab via `workflow_dispatch` against any existing tag.
 
 on:
   push:
@@ -26,19 +33,29 @@ on:
         type: string
 
 permissions:
-  contents: write   # required by softprops/action-gh-release to create / edit the release
-
-defaults:
-  run:
-    working-directory: scannerHelper
+  contents: read
 
 jobs:
+  build:
+    # Call the reusable workflow. When triggered by tag push, github.ref
+    # already points at the tag — pass it through explicitly so that
+    # workflow_dispatch (which runs from `main` by default) also builds
+    # the right commit.
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+      retention_days: 7
+
   release:
+    name: publish GitHub Release
+    needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
+    permissions:
+      contents: write   # required by softprops/action-gh-release to create the release
 
     steps:
-      - name: Checkout
+      - name: Checkout (same ref as build)
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref }}
@@ -48,19 +65,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
-          cache-dependency-path: scannerHelper/pyproject.toml
-
-      - name: Install build + test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-
-      - name: Run unit tests (release gate)
-        run: pytest tests/unit/ -q
 
       - name: Verify tag matches _version.py
         shell: bash
+        working-directory: scannerHelper
         env:
           INPUT_TAG: ${{ inputs.tag }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
@@ -68,7 +76,8 @@ jobs:
           set -euo pipefail
           tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
           tag_version="${tag#v}"
-          file_version="$(python -c 'from fabric_scanner._version import __version__; print(__version__)')"
+          # Read the version straight from the file — no install needed
+          file_version="$(python -c 'import re,pathlib; t=pathlib.Path("src/fabric_scanner/_version.py").read_text(); print(re.search(r"__version__\s*=\s*[\x22\x27]([^\x22\x27]+)", t).group(1))')"
           echo "tag           = ${tag}"
           echo "tag_version   = ${tag_version}"
           echo "file_version  = ${file_version}"
@@ -78,33 +87,25 @@ jobs:
             exit 1
           fi
 
-      - name: Build wheel + sdist
-        run: |
-          python -m pip install --upgrade build
-          rm -rf dist build *.egg-info
-          python -m build
+      - name: Download dist artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: downloaded-dist/
 
-      - name: List built artifacts
-        run: ls -la dist/
-
-      - name: Smoke-test the freshly built wheel
+      - name: Verify exactly one wheel + one sdist
+        shell: bash
         run: |
-          python -m venv .venv-smoke
-          ./.venv-smoke/bin/pip install --quiet dist/fabric_scanner-*.whl
-          ./.venv-smoke/bin/python - <<'PY'
-          from fabric_scanner import ScannerConfig, scan_notebook_bytes, __version__
-          import os
-          print("installed version:", __version__)
-          path = "tests/fixtures/sample_secrets.ipynb"
-          if not os.path.exists(path):
-              # The fixture is gitignored; rebuild it via the project's helper.
-              import subprocess, sys
-              subprocess.check_call([sys.executable, "tests/fixtures/build_fixtures.py"])
-          body = open(path, "rb").read()
-          findings = scan_notebook_bytes(body, "sample_secrets.ipynb", ScannerConfig())
-          print(f"{len(findings)} findings on sample_secrets.ipynb")
-          assert len(findings) >= 10, f"expected >=10 findings, got {len(findings)}"
-          PY
+          set -euo pipefail
+          ls -la downloaded-dist/
+          whl_count="$(find downloaded-dist -name '*.whl' | wc -l)"
+          sdist_count="$(find downloaded-dist -name '*.tar.gz' | wc -l)"
+          echo "wheels:  ${whl_count}"
+          echo "sdists:  ${sdist_count}"
+          if [ "${whl_count}" -ne 1 ] || [ "${sdist_count}" -ne 1 ]; then
+            echo "::error::Expected exactly 1 wheel and 1 sdist, got ${whl_count} / ${sdist_count}"
+            exit 1
+          fi
 
       - name: Create / update GitHub Release with artifacts
         uses: softprops/action-gh-release@v2
@@ -114,5 +115,5 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            scannerHelper/dist/fabric_scanner-*.whl
-            scannerHelper/dist/fabric_scanner-*.tar.gz
+            downloaded-dist/fabric_scanner-*.whl
+            downloaded-dist/fabric_scanner-*.tar.gz

@@ -1,0 +1,32 @@
+name: ci
+
+# Continuous integration: run tests + build the wheel on every push
+# and pull request, by calling the reusable build workflow.
+#
+# Tag pushes (`v*.*.*`) are intentionally excluded here — those are
+# handled by release.yml, which calls the same build workflow and then
+# publishes the artifact to a GitHub Release.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Cancel in-progress runs of this workflow when a new commit lands on
+# the same branch / PR. Saves runner time and keeps the status check
+# focused on the latest commit.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      retention_days: 7
