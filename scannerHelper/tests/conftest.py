@@ -67,6 +67,39 @@ def fake_notebookutils(monkeypatch):
     return mod
 
 
+@pytest.fixture(scope="session")
+def spark():
+    """Local SparkSession for tests that exercise Spark SQL expressions.
+
+    Skipped when:
+      - pyspark is not installed (typical CI without the `spark` extra), OR
+      - SparkSession startup fails (no JDK, broken winutils, etc.), OR
+      - A trivial collect() fails (Python worker mis-spawn — common on
+        Windows + Python 3.12).
+    """
+    pyspark = pytest.importorskip("pyspark")
+    import os
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+    os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+    try:
+        from pyspark.sql import SparkSession
+        s = (SparkSession.builder
+             .appName("fabric_scanner-tests")
+             .master("local[2]")
+             .config("spark.ui.enabled", "false")
+             .config("spark.sql.shuffle.partitions", "2")
+             .getOrCreate())
+        # Smoke-test the Python worker pathway — `createDataFrame` from
+        # a Python list spawns a Python worker, which is exactly what
+        # fails on a broken JDK/winutils install. If it doesn't work,
+        # skip rather than fail every Spark-dependent test.
+        s.createDataFrame([(1,)], ["x"]).collect()
+    except Exception as e:
+        pytest.skip(f"SparkSession not runnable in this environment: {e}")
+    yield s
+    s.stop()
+
+
 def make_ipynb(cells: list[dict], metadata: dict | None = None) -> bytes:
     """Build a minimal valid .ipynb document as bytes."""
     nb = {

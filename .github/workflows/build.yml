@@ -61,6 +61,16 @@ jobs:
       - name: Run unit tests
         run: pytest tests/unit/ -q
 
+      - name: Verify generated notebooks are in sync with build_notebook.py
+        run: |
+          python scripts/build_notebook.py
+          if ! git diff --exit-code -- notebooks/; then
+            echo ""
+            echo "::error::notebooks/ is out of sync with scripts/build_notebook.py."
+            echo "Run 'python scripts/build_notebook.py' locally and commit the result."
+            exit 1
+          fi
+
       - name: Build wheel + sdist
         run: |
           python -m pip install --upgrade build
