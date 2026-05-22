@@ -1,0 +1,16 @@
+# Python package build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Auto-generated test fixtures containing synthetic provider tokens. Kept
+# out of the repo so GitHub push protection doesn't flag the test data;
+# tests/conftest.py regenerates them on first run.
+tests/fixtures/sample_secrets.ipynb

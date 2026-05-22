@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name            = "fabric-scanner"
+dynamic         = ["version"]
+description     = "Audit Microsoft Fabric notebooks for URLs, secrets, API keys, and external-write operations."
+readme          = "README.md"
+requires-python = ">=3.10"
+license         = { text = "MIT" }
+authors         = [{ name = "Tim Arif" }]
+keywords        = ["fabric", "notebook", "audit", "security", "scanner", "secrets"]
+classifiers     = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    # Engine has zero non-stdlib deps on purpose so this wheel imports on
+    # any Python install (laptop, CI, Fabric runtime). Spark + Fabric REST
+    # support is opt-in via extras below.
+]
+
+[project.optional-dependencies]
+spark = [
+    "pyspark>=3.5",
+]
+api = [
+    "aiohttp>=3.9",
+    "requests>=2.31",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.5",
+    "build>=1.0",
+    "hatch>=1.9",
+    "aioresponses>=0.7",
+    "nbformat>=5.9",
+]
+
+[project.urls]
+Homepage   = "https://github.com/timarif/FabricHelpers"
+Repository = "https://github.com/timarif/FabricHelpers"
+Issues     = "https://github.com/timarif/FabricHelpers/issues"
+
+[tool.hatch.version]
+path = "src/fabric_scanner/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fabric_scanner"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/fabric_scanner",
+    "tests",
+    "README.md",
+    "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths       = ["tests"]
+addopts         = "-ra -q --strict-markers"
+markers         = [
+    "integration: requires pyspark + a local SparkSession (slow)",
+    "e2e: runs the published thin notebook end-to-end (slowest)",
+]
+filterwarnings  = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length    = 100
+target-version = "py310"
+extend-exclude = ["notebooks", "tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]  # let formatter handle long lines
