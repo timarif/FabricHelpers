@@ -41,6 +41,8 @@ dev = [
     "ruff>=0.5",
     "build>=1.0",
     "hatch>=1.9",
+    "aiohttp>=3.9",
+    "requests>=2.31",
     "aioresponses>=0.7",
     "nbformat>=5.9",
 ]
