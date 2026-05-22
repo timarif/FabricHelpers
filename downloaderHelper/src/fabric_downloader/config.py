@@ -1,0 +1,172 @@
+"""User-facing configuration for the Fabric item downloader.
+
+`DownloaderConfig` is a frozen dataclass — every knob lives here and the rest
+of the package threads it through unchanged. Defaults reproduce the seed
+notebook (`notebook_downloader.ipynb`) for a single-type Notebook download
+with the additional ability to opt into multi-type downloads (Notebook +
+DataPipeline + Dataflow + anything else `getDefinition` supports) via the
+`item_types` tuple.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field, fields
+from typing import Mapping
+
+
+# Built-in item types known to expose `POST /items/{id}/getDefinition`.
+# This is informational only — the enumerate/fetch layers accept any string
+# the caller drops into `item_types`. New Fabric item types can be added by
+# users without a package release.
+KNOWN_ITEM_TYPES: tuple[str, ...] = (
+    "Notebook",
+    "DataPipeline",
+    "Dataflow",
+    "Report",
+    "SemanticModel",
+    "SparkJobDefinition",
+)
+
+
+# Per-type format hints. When a type appears as a key, its value is passed as
+# the `?format=` query string to `getDefinition`. When missing, the call uses
+# the default (no format) which returns every part separately ("parts" mode).
+DEFAULT_FORMAT_BY_TYPE: Mapping[str, str] = {
+    "Notebook": "ipynb",   # one self-contained .ipynb file per notebook
+}
+
+
+@dataclass(frozen=True)
+class DownloaderConfig:
+    # --- What to download ---------------------------------------------------
+    item_types: tuple[str, ...] = ("Notebook",)
+    """Fabric item types to enumerate + download (`Notebook`, `DataPipeline`,
+    `Dataflow`, etc.). The enumerate/fetch layers accept any Fabric item
+    type string supported by /v1/admin/items + /getDefinition."""
+
+    format_by_type: Mapping[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_FORMAT_BY_TYPE))
+    """Per-type `?format=` overrides. Missing keys -> no format param (the
+    API returns every definition part separately = "parts" mode)."""
+
+    # --- Enumeration --------------------------------------------------------
+    admin_mode: bool = True
+    """When True, try tenant-admin endpoints first (PBI admin/groups ->
+    Fabric admin/workspaces -> user /workspaces). When False, only the
+    user-scoped `/v1/workspaces` endpoint is used."""
+
+    read_workspace_ids: tuple[str, ...] = field(default_factory=tuple)
+    """Allowlist filter. Empty tuple = all visible workspaces."""
+
+    max_items: int = 0
+    """Hard cap on items fetched per run. 0 disables the cap. Useful for
+    dry-runs (e.g. `max_items=5`)."""
+
+    # --- Output -------------------------------------------------------------
+    output_root: str = "fabric_item_backups"
+    """Sub-folder under `Files/` where the downloaded files land."""
+
+    run_label: str = ""
+    """Identifies this run in the manifest table. Empty -> auto-generated
+    as `yyyy-mm-dd_HH-MM-SS` UTC at runtime."""
+
+    manifest_table: str = "fabric_download_manifest"
+    """Delta table that records one row per download attempt."""
+
+    include_raw_definition: bool = False
+    """Also save the raw getDefinition JSON envelope (full body with
+    platform metadata) as `<name>__<id>.item.json` — useful for
+    round-trip restore."""
+
+    skip_existing: bool = True
+    """Skip writing files whose target path already exists. Lets you
+    safely resume a partial run by re-running with the same `run_label`."""
+
+    group_by_type: bool = True
+    """Group output folders by item type: `<wsName>__<wsId>/<Type>/<file>`.
+    Set False to flatten everything under `<wsName>__<wsId>/<file>` (the
+    seed notebook's layout — only safe when `item_types` is a single
+    type)."""
+
+    # --- Write target -------------------------------------------------------
+    write_to_default_lakehouse: bool = True
+    write_workspace_id: str = ""
+    write_lakehouse_id: str = ""
+    write_schema: str | None = None
+
+    # --- Fabric REST --------------------------------------------------------
+    fabric_base:    str = "https://api.fabric.microsoft.com"
+    pbi_base:       str = "https://api.powerbi.com"
+    token_audience: str = "pbi"
+    """Audience string passed to `notebookutils.credentials.getToken`.
+    Both `"pbi"` and `"https://api.fabric.microsoft.com"` work in the
+    Fabric runtime; `"pbi"` is the seed notebook's default."""
+
+    # --- Spark distribution -------------------------------------------------
+    num_partitions: int = 0
+    """0 -> use `sc.defaultParallelism`."""
+
+    executor_concurrency: int = 30
+    """Async in-flight fetches per Spark partition."""
+
+    max_retries: int = 4
+    """Per-item retries before giving up (covers 401/429/5xx)."""
+
+    # ----------------------------------------------------------------------
+    def __post_init__(self) -> None:
+        if not self.item_types:
+            raise ValueError("item_types must contain at least one type")
+        if not all(isinstance(t, str) and t for t in self.item_types):
+            raise ValueError("item_types entries must be non-empty strings")
+        if not self.output_root:
+            raise ValueError("output_root must be non-empty")
+        if self.executor_concurrency < 1:
+            raise ValueError("executor_concurrency must be >= 1")
+        if self.max_retries < 0:
+            raise ValueError("max_retries must be >= 0")
+        if self.num_partitions < 0:
+            raise ValueError("num_partitions must be >= 0")
+        if self.max_items < 0:
+            raise ValueError("max_items must be >= 0")
+        if (not self.write_to_default_lakehouse
+                and not (self.write_workspace_id and self.write_lakehouse_id)):
+            raise ValueError(
+                "write_to_default_lakehouse=False requires both "
+                "write_workspace_id and write_lakehouse_id")
+
+    # ----------------------------------------------------------------------
+    @classmethod
+    def from_dict(cls, d: dict) -> "DownloaderConfig":
+        """Build a config from a plain dict (e.g. JSON-loaded notebook
+        params). Unknown keys raise TypeError so typos show up loudly."""
+        valid = {f.name for f in fields(cls)}
+        unknown = set(d) - valid
+        if unknown:
+            raise TypeError(
+                f"Unknown DownloaderConfig fields: {sorted(unknown)}")
+        # Cast list values back to tuple for the tuple-typed fields.
+        d = dict(d)
+        for tuple_field in ("item_types", "read_workspace_ids"):
+            if tuple_field in d and not isinstance(d[tuple_field], tuple):
+                d[tuple_field] = tuple(d[tuple_field])
+        return cls(**d)
+
+    def to_dict(self) -> dict:
+        out: dict = {}
+        for f in fields(self):
+            v = getattr(self, f.name)
+            if isinstance(v, tuple):
+                out[f.name] = list(v)
+            elif isinstance(v, Mapping):
+                out[f.name] = dict(v)
+            else:
+                out[f.name] = v
+        return out
+
+    def format_for(self, item_type: str) -> str | None:
+        """Return the `?format=` value for `item_type`, or None when no
+        override is configured (defaults to parts mode)."""
+        return self.format_by_type.get(item_type) if self.format_by_type else None
+
+    def export_mode_for(self, item_type: str) -> str:
+        """`"ipynb"` when this type has a format override, else `"parts"`."""
+        return "ipynb" if self.format_for(item_type) == "ipynb" else "parts"

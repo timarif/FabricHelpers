@@ -70,6 +70,51 @@ configuration, cell-by-cell architecture, and safety semantics.
 
 ---
 
+### 💾 [`downloaderHelper/`](./downloaderHelper) — Fabric Item Downloader (Notebook / Pipeline / Dataflow)
+
+An installable wheel (`fabric-downloader`) plus a thin five-cell orchestration
+notebook that backs up **Fabric notebooks, data pipelines, and dataflows** to
+a Lakehouse. Generalizes the legacy `notebook_downloader.ipynb` script to any
+Fabric item type whose `getDefinition` endpoint returns a parts array, driven
+by a single `item_types` tuple on the config:
+
+```python
+from fabric_downloader import DownloaderConfig
+from fabric_downloader.spark import run
+
+cfg = DownloaderConfig(
+    item_types     = ("Notebook", "DataPipeline", "Dataflow"),
+    output_root    = "fabric_item_backups",
+    manifest_table = "fabric_download_manifest",
+    skip_existing  = True,
+    executor_concurrency = 30,
+)
+result = run(cfg, spark)
+display(result.summary.by_type)
+```
+
+- **Multi-type by config** — Notebook (`?format=ipynb`), DataPipeline
+  (parts: `pipeline-content.json` + `.platform`), Dataflow Gen2 (parts:
+  `mashup.pq` + `.platform` + metadata), plus any other type that exposes
+  `getDefinition`. Per-type `format_by_type` override available.
+- **Tenant-scale fan-out** — Spark `mapPartitions` + async `aiohttp` with
+  bounded per-executor concurrency, single-flight 401 token refresh,
+  202 LRO polling, and 429/5xx exponential backoff.
+- **Restart-safe** — `skip_existing=True` skips files already written so
+  re-runs with the same `run_label` resume cleanly.
+- **Accumulating manifest** — one row per item attempt is appended to a
+  Delta table; six SQL rollups (by_status, by_type, by_workspace, errors,
+  balance_check, run_summary) are computed automatically.
+- **Wheel-based** — bug fixes and new item-type support ship as new wheel
+  versions; the orchestration notebook stays a thin 12-cell shim pinned to
+  a specific `fabric-downloader==X.Y.Z`.
+
+See [`downloaderHelper/README.md`](./downloaderHelper/README.md) for install,
+usage, manifest schema, output layout, and a restore recipe for re-uploading
+saved items back into Fabric.
+
+---
+
 ## License
 
 See [LICENSE](./LICENSE).
