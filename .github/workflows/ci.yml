@@ -29,4 +29,5 @@ jobs:
   build:
     uses: ./.github/workflows/build.yml
     with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
       retention_days: 7
