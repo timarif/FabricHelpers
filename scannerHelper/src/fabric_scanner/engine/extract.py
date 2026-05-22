@@ -7,14 +7,148 @@ Two public entry points:
         -> dict with the four attached_lakehouse_* keys (any may be None)
 
 Handles plain `.py` / `.md` / `.ipynb`, Fabric Item JSON with
-`definition.parts` (base64-encoded payloads), and Fabric Item JSON with
-`properties.cells` / `properties.metadata`.
+`definition.parts` (base64-encoded payloads), Fabric Item JSON with
+`properties.cells` / `properties.metadata`, and the Fabric notebook
+source-export `.py` format with `# META { ... # META }` blocks and
+`# CELL ********************` / `# MARKDOWN ********************`
+separators.
 """
 from __future__ import annotations
 
 import base64
 import json
 from typing import Iterable
+
+
+_FABRIC_PY_HEADER     = "# Fabric notebook source"
+_FABRIC_PY_META_LINE  = "# META"           # may be followed by space + JSON
+_FABRIC_PY_METADATA   = "# METADATA ****"
+_FABRIC_PY_CELL       = "# CELL ****"
+_FABRIC_PY_MARKDOWN   = "# MARKDOWN ****"
+
+
+def _is_fabric_py_source(text: str) -> bool:
+    """Detect the Fabric notebook source-export format.
+
+    Heuristic: file begins with the Fabric header, OR contains both
+    a '# METADATA ****' separator and at least one '# META {' line.
+    """
+    if not text:
+        return False
+    head = text.lstrip()
+    if head.startswith(_FABRIC_PY_HEADER):
+        return True
+    if _FABRIC_PY_METADATA in text and "# META {" in text:
+        return True
+    return False
+
+
+def _decode_meta_block(lines: list[str], start: int) -> tuple[dict | None, int]:
+    """Starting at lines[start], consume consecutive '# META' lines and
+    decode their stripped contents as a JSON object.
+
+    Returns (parsed dict or None, index just past the last consumed line).
+    Non-'# META' lines and JSON parse failures both return None.
+    """
+    collected: list[str] = []
+    i = start
+    while i < len(lines):
+        s = lines[i]
+        # Match '# META ' (with payload) or bare '# META' (blank line in JSON).
+        if s.startswith(_FABRIC_PY_META_LINE + " "):
+            collected.append(s[len(_FABRIC_PY_META_LINE) + 1:])
+        elif s.rstrip() == _FABRIC_PY_META_LINE:
+            collected.append("")
+        else:
+            break
+        i += 1
+    joined = "\n".join(collected).strip()
+    if not joined:
+        return None, i
+    try:
+        obj = json.loads(joined)
+    except (json.JSONDecodeError, ValueError):
+        return None, i
+    return (obj if isinstance(obj, dict) else None), i
+
+
+def _parse_fabric_py_source(
+    text: str,
+) -> tuple[dict | None, list[tuple[str, int, str]]]:
+    """Parse the Fabric notebook source-export format.
+
+    Returns (notebook_metadata, cells) where each cell is
+    (cell_text, cell_index, source_kind). source_kind is 'code' for
+    '# CELL ****' blocks and 'markdown' for '# MARKDOWN ****' blocks
+    (with leading '# ' line comments stripped from markdown cells).
+
+    Per-cell '# META ...' trailers are consumed and not included in
+    the cell text.
+    """
+    notebook_meta: dict | None = None
+    cells: list[tuple[str, int, str]] = []
+    lines = text.splitlines()
+    n = len(lines)
+    i = 0
+    cur_lines: list[str] = []
+    cur_kind: str | None = None     # 'code' | 'markdown' | None
+    cell_idx = -1
+
+    def _flush_cell() -> None:
+        nonlocal cur_lines, cur_kind
+        if cur_kind is None:
+            return
+        body = "\n".join(cur_lines).strip("\n")
+        if cur_kind == "markdown":
+            # Strip the leading "# " comment prefix Fabric adds to
+            # each markdown line. Lines that are exactly "#" become blank.
+            md_lines = []
+            for ln in body.splitlines():
+                if ln.startswith("# "):
+                    md_lines.append(ln[2:])
+                elif ln == "#":
+                    md_lines.append("")
+                else:
+                    md_lines.append(ln)
+            body = "\n".join(md_lines)
+        cells.append((body, cell_idx, cur_kind))
+        cur_lines = []
+        cur_kind = None
+
+    while i < n:
+        s = lines[i]
+        if s.startswith(_FABRIC_PY_METADATA):
+            _flush_cell()
+            i += 1
+            while i < n and lines[i].strip() == "":
+                i += 1
+            meta, i = _decode_meta_block(lines, i)
+            # First metadata block (before any cell) is the notebook-level meta.
+            if notebook_meta is None and not cells and cur_kind is None:
+                notebook_meta = meta
+            continue
+        if s.startswith(_FABRIC_PY_CELL):
+            _flush_cell()
+            cell_idx += 1
+            cur_kind = "code"
+            i += 1
+            while i < n and lines[i].strip() == "":
+                i += 1
+            continue
+        if s.startswith(_FABRIC_PY_MARKDOWN):
+            _flush_cell()
+            cell_idx += 1
+            cur_kind = "markdown"
+            i += 1
+            while i < n and lines[i].strip() == "":
+                i += 1
+            continue
+        if cur_kind is not None:
+            cur_lines.append(s)
+        i += 1
+    _flush_cell()
+
+    return notebook_meta, cells
 
 
 def extract_blocks(
@@ -39,6 +173,15 @@ def extract_blocks(
 
     fp = (file_path or "").lower()
     if fp.endswith(".py"):
+        if _is_fabric_py_source(text):
+            _, cells = _parse_fabric_py_source(text)
+            if cells:
+                blocks = []
+                for body, idx, kind in cells:
+                    if kind == "markdown" and not include_md_and_outputs:
+                        continue
+                    blocks.append((body, idx, kind, ""))
+                return blocks
         return [(text, 0, "code", "")]
     if fp.endswith(".md"):
         return [(text, 0, "markdown", "")]
@@ -112,6 +255,14 @@ def extract_blocks(
                                     ot = "".join(t) if isinstance(t, list) else str(t)
                                     blocks.append((ot, j, "output", path))
                 elif path.endswith(".py"):
+                    if _is_fabric_py_source(decoded):
+                        _, sub_cells = _parse_fabric_py_source(decoded)
+                        if sub_cells:
+                            for body, idx, kind in sub_cells:
+                                if kind == "markdown" and not include_md_and_outputs:
+                                    continue
+                                blocks.append((body, idx, kind, path))
+                            continue
                     blocks.append((decoded, i, "code", path))
                 elif path.endswith(".md"):
                     if include_md_and_outputs:
@@ -188,7 +339,15 @@ def extract_attached_lakehouse(
         return dict(empty)
 
     fp = (file_label or "").lower()
-    if fp.endswith(".py") or fp.endswith(".md"):
+    if fp.endswith(".md"):
+        return dict(empty)
+    if fp.endswith(".py") or (not fp.endswith(".ipynb") and not fp.endswith(".json")
+                              and _is_fabric_py_source(text)):
+        if _is_fabric_py_source(text):
+            nb_meta, _ = _parse_fabric_py_source(text)
+            result = _from_meta(nb_meta)
+            if result:
+                return result
         return dict(empty)
 
     try:
@@ -206,16 +365,25 @@ def extract_attached_lakehouse(
     for part in parts:
         path = part.get("path", "") or ""
         payload = part.get("payload", "") or ""
-        if not payload or not path.endswith(".ipynb"):
+        if not payload:
             continue
         try:
             decoded = base64.b64decode(payload).decode("utf-8", errors="ignore")
-            sub = json.loads(decoded)
         except Exception:
             continue
-        result = _from_meta(sub.get("metadata"))
-        if result:
-            return result
+        if path.endswith(".ipynb"):
+            try:
+                sub = json.loads(decoded)
+            except Exception:
+                continue
+            result = _from_meta(sub.get("metadata"))
+            if result:
+                return result
+        elif path.endswith(".py") and _is_fabric_py_source(decoded):
+            nb_meta, _ = _parse_fabric_py_source(decoded)
+            result = _from_meta(nb_meta)
+            if result:
+                return result
 
     props = data.get("properties")
     if isinstance(props, dict):
