@@ -4,14 +4,14 @@ Audit Microsoft Fabric notebooks for URLs, secrets, API keys, and
 external-write operations.
 
 The scanner ships as a normal Python wheel — install it once on your
-cluster, then drive it from a five-cell orchestration notebook.
+cluster, then drive it from a thin five-phase orchestration notebook.
 
 ## Install
 
 From a Fabric notebook:
 
 ```
-%pip install -q fabric-scanner==0.3.0
+%pip install -q fabric-scanner==0.3.2
 ```
 
 Or from source for development:
@@ -23,34 +23,38 @@ pip install -e ".[dev,api,spark]"
 
 ## Usage
 
-The thin orchestration notebook (`notebooks/fabric_scanner_v2.ipynb`) is
-five cells:
+The thin orchestration notebook (`notebooks/fabric_scanner_v2.ipynb`)
+runs five phases — install, configure, probe, run, explore — across
+~13 short cells. The interesting ones look like this:
 
 ```python
-# Cell 1 — install
-%pip install -q fabric-scanner==0.3.0
+# Phase 1 — install (one cell)
+%pip install -q fabric-scanner==0.3.2
 
-# Cell 2 — config
+# Phase 2 — configure (one cell, the only one you usually edit)
 from fabric_scanner import ScannerConfig
 cfg = ScannerConfig(
-    source_mode    = "lakehouse",    # or "api"
-    source_layout  = "flat",         # or "ws_dated"
-    source_subpath = "Files/notebooks",
-    min_severity   = "low",
+    source_mode      = "lakehouse",       # or "api" for tenant scan
+    source_layout    = "flat",            # or "ws_dated"
+    source_subpath   = "Files/notebooks",
+    source_file_glob = "*.ipynb",         # widens to "*.{ipynb,py}" if needed
+    min_severity     = "low",
 )
 
-# Cell 3 — probe (sanity-check what will be scanned)
+# Phase 3 — probe (sanity-check what will be scanned)
 from fabric_scanner import resolve_paths, probe
 resolved = resolve_paths(cfg)
 probe(cfg, resolved)
 
-# Cell 4 — run
+# Phase 4 — run (writes inventory + findings Delta tables)
 from fabric_scanner.spark import run
 result = run(cfg, spark)
 print(f"{result.findings_count} findings / {result.notebook_count} notebooks")
 
-# Cell 5 — explore
+# Phase 5 — explore (display rollups)
+display(result.summary.by_severity)
 display(result.summary.review_queue)
+display(result.summary.cross_workspace_flows)
 display(result.summary.sample_critical)
 ```
 
@@ -80,14 +84,17 @@ quick spot-checks.
 
 ```
 fabric_scanner/
-├── config.py         ScannerConfig dataclass
+├── _version.py       Single source of truth for the version string
+├── config.py         ScannerConfig dataclass (every knob lives here)
 ├── engine/           Pure-Python detection logic (no Spark, no Fabric)
 │   ├── patterns.py     URL_RE, READ_RE, WRITE_RE, SECRET_PATTERNS, ...
-│   ├── extract.py      .ipynb walker + attached-lakehouse parser
+│   ├── extract.py      .ipynb / .py-source walker + attached-LH parser
 │   ├── resolve.py      cross-workspace URL classification
 │   ├── utils.py        entropy, AST scan, snippet redaction
 │   └── scanner.py      scan_notebook_bytes() — the entry point
-├── paths.py          ABFSS path math + ws_dated enumeration
+├── paths.py          ABFSS path math, ws_dated enumeration,
+│                     and PATH_GUID_DATE_RE (universal
+│                     /<guid>/<datestamp>/ extraction)
 ├── diagnostics.py    probe() — paths + endpoint sanity check
 ├── api/              Fabric REST mode (requires the [api] extra)
 │   ├── auth.py         token acquisition (5-source chain)
@@ -102,6 +109,36 @@ fabric_scanner/
 └── persist.py        write_findings + SummaryReport (10 rollups)
 ```
 
+### How the layers fit together
+
+```
+ScannerConfig  ──►  resolve_paths()  ──►  ResolvedPaths
+                                              │
+                                              ▼
+                                  build_inventory_*  (one row / notebook)
+                                              │
+                                              ▼   foreachPartition
+                                  scan_partition_*  ─►  scan_row()
+                                              │            │
+                                              │            ▼
+                                              │     engine.scanner
+                                              │     scan_notebook_bytes()
+                                              ▼
+                                  write_findings + SummaryReport
+```
+
+* **`engine/`** is the pure detection core — no Spark, no Fabric APIs,
+  no I/O. It takes bytes in and returns finding dicts. Runs anywhere
+  Python runs.
+* **`paths.py`** owns all path math: building ABFSS URLs, enumerating
+  `ws_dated` directory layouts, and extracting workspace GUIDs from
+  arbitrary paths via `PATH_GUID_DATE_RE`.
+* **`api/`** and **`spark/`** are the two execution modes. Only the
+  selected mode's dependencies are pulled in (controlled by the
+  `[api]` / `[spark]` extras).
+* **`persist.py`** writes the two Delta tables and computes the 10
+  summary rollups returned in `ScannerResult.summary`.
+
 ## Output schema
 
 One row per finding (or one empty row per file with no findings).
@@ -109,9 +146,9 @@ Inventory table is one row per scanned notebook.
 
 | Column | Type | Notes |
 |---|---|---|
-| `workspace_id` / `workspace_name` | string | always |
+| `workspace_id` / `workspace_name` | string | Path-derived when the path matches `<…>/<guid>/<datestamp>/<file>` (any layout); otherwise the source default. `workspace_name` falls back to the GUID itself when no friendly name is known. |
 | `source_lakehouse_id` / `_name` | string | lakehouse mode only |
-| `source_dated_partition` | string | populated when `source_layout="ws_dated"` |
+| `source_dated_partition` | string | populated whenever the path matches `<…>/<guid>/<datestamp>/<file>` (universal — not just `ws_dated`) |
 | `notebook_id` / `display_name` | string | always |
 | `attached_lakehouse_id` / `_name` / `_workspace_id` / `_workspace_name` | string | extracted from notebook metadata |
 | `part_path` / `source_kind` | string | where in the .ipynb the finding came from |
@@ -124,6 +161,27 @@ Inventory table is one row per scanned notebook.
 | `dest_workspace_id` / `_name` / `cross_workspace` | string + bool | parsed from URL findings |
 | `error` | string | per-file fetch/decode/scan errors |
 | `scanned_at` | timestamp | always |
+
+### Workspace attribution from the path (v0.3.2+)
+
+Both the inventory snapshot and the per-finding rows look at the file
+path and apply this universal regex (see `paths.py`):
+
+```
+/<workspace-guid>/<datestamp>/<file>
+```
+
+where `<workspace-guid>` is a standard 8-4-4-4-12 hex GUID and
+`<datestamp>` is a folder name beginning with at least 8 digits
+(`yyyymmdd[hhmmss]`, etc.). When the path matches, the extracted GUID
+becomes `workspace_id` and the datestamp becomes
+`source_dated_partition` — regardless of whether `source_layout` is
+`flat` or `ws_dated`. This lets you scan a single lakehouse that holds
+exports from many workspaces and still attribute each finding to the
+correct source workspace.
+
+Priority order: `ws_dated_base` anchor > universal regex > source
+lakehouse default.
 
 ## Build the notebook
 
@@ -141,7 +199,7 @@ python scripts/build_notebook.py
 ```pwsh
 cd scannerHelper
 pip install -e ".[dev]"
-pytest tests/unit/        # ~200 fast unit tests, no Spark required
+pytest tests/unit/        # 174 fast unit tests, no Spark required
 ```
 
 Integration tests (`tests/integration/`) need a local PySpark + Java and
@@ -154,8 +212,8 @@ cd scannerHelper
 pip install build
 python -m build
 ls dist/
-# fabric_scanner-0.3.1-py3-none-any.whl
-# fabric_scanner-0.3.1.tar.gz
+# fabric_scanner-0.3.2-py3-none-any.whl
+# fabric_scanner-0.3.2.tar.gz
 ```
 
 Attach the wheel to your Fabric environment, or upload it to a release
@@ -171,12 +229,12 @@ GitHub Release with both artifacts attached and auto-generated notes.
 
 ```pwsh
 # 1. Bump the version (single source of truth)
-#    src/fabric_scanner/_version.py  ->  __version__ = "0.3.2"
+#    src/fabric_scanner/_version.py  ->  __version__ = "0.3.3"
 # 2. Regenerate the orchestration notebook so the pin matches
 python scripts/build_notebook.py
 # 3. Commit, merge to main, then tag + push
-git tag -a v0.3.2 -m "fabric-scanner v0.3.2"
-git push origin v0.3.2
+git tag -a v0.3.3 -m "fabric-scanner v0.3.3"
+git push origin v0.3.3
 ```
 
 The workflow can also be re-run manually via the **Actions** tab
@@ -219,3 +277,26 @@ To migrate:
 - Notebook *outputs* are not scanned for secrets / writes by default
   (only URLs in outputs are captured as `reference` rows). Toggle
   `cfg.scan_markdown_and_outputs = False` to skip them entirely.
+
+## Changelog
+
+### 0.3.2
+- Workspace GUID is now extracted from the notebook path universally
+  for any layout via the new `PATH_GUID_DATE_RE` in `paths.py`. Both
+  the inventory snapshot and per-finding rows benefit. Priority:
+  `ws_dated_base` anchor > universal `/<guid>/<datestamp>/<file>`
+  pattern > source-lakehouse default.
+- `workspace_name` always falls back to the GUID itself when no
+  friendly name is known (instead of remaining empty).
+
+### 0.3.1
+- Fabric `.py` source-format notebooks: the default lakehouse ID,
+  name, and workspace ID are now parsed out of the `# META` block at
+  the top of the file (previously only handled in `.ipynb` JSON).
+- Inventory scanner walks both `*.ipynb` and `*.py` Fabric exports
+  when `source_file_glob` is widened.
+
+### 0.3.0
+- Initial wheel-based release. Replaced the single-file
+  `fabric_scanner_v2.ipynb` with a five-phase thin orchestrator
+  and an installable `fabric-scanner` wheel.
