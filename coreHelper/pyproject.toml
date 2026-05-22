@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name            = "fabric-core"
+dynamic         = ["version"]
+description     = "Shared low-level helpers (auth, REST, paths, diagnostics) for the fabric-scanner and fabric-downloader wheels."
+readme          = "README.md"
+requires-python = ">=3.10"
+license         = { text = "MIT" }
+authors         = [{ name = "Tim Arif" }]
+keywords        = ["fabric", "microsoft", "rest", "auth", "shared"]
+classifiers     = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    # Pure-Python base. REST + nbformat support is opt-in via extras so
+    # this wheel imports on any Python install (laptop, CI, Fabric runtime).
+]
+
+[project.optional-dependencies]
+api = [
+    "aiohttp>=3.9",
+    "requests>=2.31",
+]
+notebook = [
+    "nbformat>=5.9",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.5",
+    "build>=1.0",
+    "hatch>=1.9",
+    "aiohttp>=3.9",
+    "requests>=2.31",
+    "aioresponses>=0.7",
+    "nbformat>=5.9",
+]
+
+[project.urls]
+Homepage   = "https://github.com/timarif/FabricHelpers"
+Repository = "https://github.com/timarif/FabricHelpers"
+Issues     = "https://github.com/timarif/FabricHelpers/issues"
+
+[tool.hatch.version]
+path = "src/fabric_core/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fabric_core"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/fabric_core",
+    "tests",
+    "README.md",
+    "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths       = ["tests"]
+addopts         = "-ra -q --strict-markers"
+filterwarnings  = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length    = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
