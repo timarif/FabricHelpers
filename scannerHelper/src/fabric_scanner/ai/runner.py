@@ -196,14 +196,14 @@ def run_ai_audit(
     BudgetExceededError
         When the planned chunk count exceeds `options.ai_max_total_chunks`.
     """
-    from pyspark.sql import functions as F
-
     if config.source_mode != "lakehouse":
         raise RuntimeError(
             "run_ai_audit currently only supports source_mode='lakehouse'. "
             "API-mode AI audit is a roadmap item; set "
             "config.source_mode='lakehouse' and point source_subpath at "
             "your notebook exports.")
+
+    from pyspark.sql import functions as F
 
     started = datetime.now(timezone.utc)
     ws_name_by_id = {(k or "").lower(): v
