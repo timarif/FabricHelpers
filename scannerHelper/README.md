@@ -154,12 +154,33 @@ cd scannerHelper
 pip install build
 python -m build
 ls dist/
-# fabric_scanner-0.3.0-py3-none-any.whl
-# fabric-scanner-0.3.0.tar.gz
+# fabric_scanner-0.3.1-py3-none-any.whl
+# fabric_scanner-0.3.1.tar.gz
 ```
 
 Attach the wheel to your Fabric environment, or upload it to a release
 artifact and update the `%pip install` URL in cell 1 of the notebook.
+
+## Cutting a release
+
+Releases are automated via the `release.yml` GitHub Actions workflow.
+Tagging a commit with `vX.Y.Z` triggers a job that runs the unit tests,
+verifies the tag matches `src/fabric_scanner/_version.py`, builds the
+wheel + sdist, smoke-tests the wheel in a clean venv, and creates a
+GitHub Release with both artifacts attached and auto-generated notes.
+
+```pwsh
+# 1. Bump the version (single source of truth)
+#    src/fabric_scanner/_version.py  ->  __version__ = "0.3.2"
+# 2. Regenerate the orchestration notebook so the pin matches
+python scripts/build_notebook.py
+# 3. Commit, merge to main, then tag + push
+git tag -a v0.3.2 -m "fabric-scanner v0.3.2"
+git push origin v0.3.2
+```
+
+The workflow can also be re-run manually via the **Actions** tab
+(`workflow_dispatch`) against any existing tag.
 
 ## Distribution options
 
@@ -169,9 +190,8 @@ artifact and update the `%pip install` URL in cell 1 of the notebook.
 | Fabric environment library | Best UX per workspace; manual upload |
 | Internal PyPI / Azure Artifacts | Best org-wide rollout; needs feed infra |
 
-For v0.3 the recommended path is **GitHub release artifact**: attach
-`dist/fabric_scanner-0.3.0-py3-none-any.whl` to a release and pin the
-notebook against that URL.
+For v0.3 the recommended path is **GitHub release artifact**: pin the
+notebook against the release-asset URL.
 
 ## Migrating from the legacy notebook
 
