@@ -221,37 +221,106 @@ artifact and update the `%pip install` URL in cell 1 of the notebook.
 
 ## Continuous integration
 
-Three GitHub Actions workflows live under `.github/workflows/`:
+Four GitHub Actions workflows live under `.github/workflows/`:
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
 | `build.yml` | `workflow_call` | Reusable: install deps, run **174 unit tests**, build wheel + sdist, smoke-test the wheel in a clean venv, upload artifacts as `dist`. |
-| `ci.yml` | every push (non-tag) + every PR to `main` | Calls `build.yml` so PRs get a green-check gate before merge. Concurrency-cancels in-progress runs on the same ref. |
-| `release.yml` | push of a `v*.*.*` tag (or manual `workflow_dispatch`) | Calls `build.yml` first, then a `needs: build` release job verifies the tag matches `_version.py`, downloads the freshly tested artifacts, and publishes a GitHub Release with auto-generated notes. |
+| `ci.yml` | PR to `main` | Calls `build.yml`. Provides the green-check gate before merge. Concurrency-cancels stale runs on the same PR. |
+| `main.yml` | push to `main`, manual dispatch | The auto-tag + release pipeline. Three jobs: (1) bump `_version.py`, regenerate the notebook, commit + tag + push; (2) call `build.yml` against the new tag; (3) **`environment: production`** — pauses for manual approval, then publishes the GitHub Release with the wheel + sdist attached. |
+| `release.yml` | manual dispatch only | Fallback to re-release any existing tag (e.g. if a previous artifact upload failed). Also gated by `environment: production`, so the manual approval requirement cannot be bypassed. |
 
-The release publishes the **exact same** wheel + sdist that were
-tested and smoke-tested in the same workflow run — there is no
-separate "build for release" path that could drift from CI.
+The release always publishes the **exact same** wheel that was
+tested + smoke-tested in the same workflow run — there is no
+separate "build for release" path that could drift.
 
-## Cutting a release
+## How releases work
 
-Tagging a commit with `vX.Y.Z` triggers the `release.yml` workflow,
-which runs `build.yml` (tests + build + smoke-test) and — only if that
-succeeds — publishes a GitHub Release with the artifacts attached and
-auto-generated notes.
+Every push to `main` automatically bumps the patch version, tags the
+commit, builds the wheel, and queues a GitHub Release that waits for a
+maintainer to approve it.
 
-```pwsh
-# 1. Bump the version (single source of truth)
-#    src/fabric_scanner/_version.py  ->  __version__ = "0.3.3"
-# 2. Regenerate the orchestration notebook so the pin matches
-python scripts/build_notebook.py
-# 3. Commit, merge to main, then tag + push
-git tag -a v0.3.3 -m "fabric-scanner v0.3.3"
-git push origin v0.3.3
+### The everyday flow
+
+```text
+PR merged to main
+        │
+        ▼
+main.yml fires (push: main)
+        │
+        ▼
+┌──────────────────────────────────────┐
+│ 1. tag                               │
+│    - Read latest v*.*.* git tag      │
+│    - Bump patch (default)            │
+│    - Update _version.py              │
+│    - Regenerate notebook             │
+│    - Commit "chore: bump to vX.Y.Z   │
+│      [skip ci]" and push to main     │
+│    - Create + push tag vX.Y.Z        │
+│    - Idempotent: re-runs against an  │
+│      already-tagged HEAD reuse the   │
+│      existing tag instead of bumping │
+└──────────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────────┐
+│ 2. build (calls build.yml)           │
+│    - Checkout new tag                │
+│    - pytest tests/unit (174)         │
+│    - python -m build                 │
+│    - Smoke-test wheel in clean venv  │
+│    - Upload `dist` artifact          │
+└──────────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────────┐
+│ 3. release  (environment:production) │
+│    ⏸ PAUSES for manual approval     │
+│    ✓ Reviewer clicks "Approve and    │
+│      deploy" in the Actions UI       │
+│    - Download dist artifact          │
+│    - Publish GitHub Release at the   │
+│      new tag with auto-generated     │
+│      notes + wheel + sdist           │
+└──────────────────────────────────────┘
 ```
 
-The workflow can also be re-run manually via the **Actions** tab
-(`workflow_dispatch`) against any existing tag.
+### Approving (or rejecting) a release
+
+1. Go to **Actions** → the most recent **main** workflow run.
+2. The `release` job will be in **Waiting** state with a "Review deployments" button.
+3. Choose **Approve and deploy** (publishes the release) or **Reject** (cancels — the tag stays, but no GitHub Release is created).
+
+### Opting out of a release for a single commit
+
+Add `[skip release]` anywhere in the commit message of the merge into `main`. The pipeline exits before bumping/tagging — useful for docs-only changes you don't want to release.
+
+### Overriding the bump (minor / major / explicit version)
+
+From the **Actions** tab → **main** workflow → **Run workflow**:
+
+| Input | Behavior |
+|---|---|
+| `bump = patch` (default) | 0.3.2 → 0.3.3 |
+| `bump = minor` | 0.3.x → 0.4.0 |
+| `bump = major` | 0.x.y → 1.0.0 |
+| `version = 1.2.0` (explicit) | Tags `v1.2.0` directly. Must be greater than the latest tag and not already exist. |
+
+### One-time GitHub UI setup (required before this works)
+
+After merging this workflow, configure the repo once:
+
+1. **Settings → Actions → General → Workflow permissions** → select **Read and write permissions**. This lets the `tag` job push commits + tags back to `main`.
+2. **Settings → Environments → New environment `production`** → add yourself (or a maintainer group) as a **Required reviewer**. This is what creates the manual approval gate. *Until this is configured, the release job will run immediately without pausing.*
+3. **Settings → Branches** (if branch protection is enabled on `main`) → allow `github-actions[bot]` to bypass the required PR/review rules, otherwise the tag job's push will be rejected.
+
+### Re-running a failed release for an existing tag
+
+If the tag was created but the release publish failed (e.g. transient artifact-upload error), use the `release.yml` fallback:
+
+1. **Actions** → **release** workflow → **Run workflow** → enter the tag (e.g. `v0.3.3`).
+2. It will rebuild the wheel from the tag's commit, then prompt for manual approval before publishing.
 
 ## Distribution options
 

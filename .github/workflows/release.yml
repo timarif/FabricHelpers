@@ -1,30 +1,17 @@
 name: release
 
-# Publishes fabric-scanner whenever a `vX.Y.Z` tag is pushed.
+# Manual fallback to re-release (or rebuild) an existing tag.
 #
-# Two-job flow:
-#   1. `build` — calls the reusable build.yml workflow, which runs the
-#      unit tests, builds the wheel + sdist, smoke-tests the wheel in
-#      a clean venv, and uploads the artifacts under the name `dist`.
-#   2. `release` — gated on `needs: build`. Checks out the same ref,
-#      verifies the tag matches `_version.py`, downloads the artifact
-#      produced by job 1, and creates a GitHub Release with both files
-#      attached and auto-generated notes.
+# Day-to-day releases are handled automatically by main.yml on every
+# push to `main`. Use THIS workflow only when you need to re-run a
+# release for an existing tag — for example, if the artifact upload
+# failed but the tag and bump already happened.
 #
-# The release publishes the *same* artifact that was tested and
-# smoke-tested in this run — there is no separate "build for release"
-# path that could drift from CI.
-#
-# To cut a release:
-#     git tag -a v0.3.3 -m "fabric-scanner v0.3.3"
-#     git push origin v0.3.3
-# The workflow does the rest. You can also re-run manually from the
-# Actions tab via `workflow_dispatch` against any existing tag.
+# Like main.yml, the publish step is gated by the `production`
+# environment so the manual approval requirement cannot be
+# circumvented by triggering this workflow.
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
@@ -37,53 +24,44 @@ permissions:
 
 jobs:
   build:
-    # Call the reusable workflow. When triggered by tag push, github.ref
-    # already points at the tag — pass it through explicitly so that
-    # workflow_dispatch (which runs from `main` by default) also builds
-    # the right commit.
+    # Reuse the same build workflow so the artifact is regenerated
+    # and smoke-tested before re-publishing.
     uses: ./.github/workflows/build.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ inputs.tag }}
       retention_days: 7
 
   release:
-    name: publish GitHub Release
+    name: publish GitHub Release (manual approval)
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: production
     permissions:
-      contents: write   # required by softprops/action-gh-release to create the release
+      contents: write
 
     steps:
-      - name: Checkout (same ref as build)
+      - name: Checkout at the requested tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
       - name: Verify tag matches _version.py
         shell: bash
         working-directory: scannerHelper
         env:
           INPUT_TAG: ${{ inputs.tag }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          tag="${INPUT_TAG}"
           tag_version="${tag#v}"
-          # Read the version straight from the file — no install needed
-          file_version="$(python -c 'import re,pathlib; t=pathlib.Path("src/fabric_scanner/_version.py").read_text(); print(re.search(r"__version__\s*=\s*[\x22\x27]([^\x22\x27]+)", t).group(1))')"
+          file_version="$(python3 -c 'import re,pathlib; t=pathlib.Path("src/fabric_scanner/_version.py").read_text(); print(re.search(r"__version__\s*=\s*[\x22\x27]([^\x22\x27]+)", t).group(1))')"
           echo "tag           = ${tag}"
           echo "tag_version   = ${tag_version}"
           echo "file_version  = ${file_version}"
           if [ "${tag_version}" != "${file_version}" ]; then
             echo "::error::Tag (${tag_version}) does not match _version.py (${file_version})."
-            echo "Bump src/fabric_scanner/_version.py before tagging, or retag."
             exit 1
           fi
 
@@ -100,8 +78,6 @@ jobs:
           ls -la downloaded-dist/
           whl_count="$(find downloaded-dist -name '*.whl' | wc -l)"
           sdist_count="$(find downloaded-dist -name '*.tar.gz' | wc -l)"
-          echo "wheels:  ${whl_count}"
-          echo "sdists:  ${sdist_count}"
           if [ "${whl_count}" -ne 1 ] || [ "${sdist_count}" -ne 1 ]; then
             echo "::error::Expected exactly 1 wheel and 1 sdist, got ${whl_count} / ${sdist_count}"
             exit 1
@@ -110,8 +86,8 @@ jobs:
       - name: Create / update GitHub Release with artifacts
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          name: ${{ inputs.tag || github.ref_name }}
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
