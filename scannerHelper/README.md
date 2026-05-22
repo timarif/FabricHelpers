@@ -11,7 +11,7 @@ cluster, then drive it from a thin five-phase orchestration notebook.
 From a Fabric notebook:
 
 ```
-%pip install -q fabric-scanner==0.3.2
+%pip install -q fabric-scanner==0.3.3
 ```
 
 Or from source for development:
@@ -21,6 +21,22 @@ cd scannerHelper
 pip install -e ".[dev,api,spark]"
 ```
 
+## Two scanners, one wheel
+
+| | Rule-based scanner | AI auditor |
+|---|---|---|
+| Notebook | `notebooks/fabric_scanner_v2.ipynb` | `notebooks/fabric_scanner_ai_v1.ipynb` |
+| Python entry | `fabric_scanner.spark.run` | `fabric_scanner.ai.run_ai_audit` |
+| Detection | Regex + AST + entropy on notebook bytes | Fabric AI Functions (LLM) over notebook text |
+| Output | One row per finding | One row per notebook + per-chunk debug rows |
+| Severity model | `low` / `medium` / `high` / `critical` | `external_resource_access_score` + `exfiltration_risk_score` (both 0-100) |
+| Spend | Free | Charged by your Fabric AI quota |
+| Cross-table JOIN | Shares `(workspace_id, source_dated_partition, display_name)` enrichment with the AI auditor (see `## AI Auditor` below) | ditto |
+
+Both scanners reuse the same shared inventory + path-based workspace
+attribution + attached-lakehouse metadata extraction, so their output
+tables JOIN cleanly without alignment work.
+
 ## Usage
 
 The thin orchestration notebook (`notebooks/fabric_scanner_v2.ipynb`)
@@ -29,7 +45,7 @@ runs five phases — install, configure, probe, run, explore — across
 
 ```python
 # Phase 1 — install (one cell)
-%pip install -q fabric-scanner==0.3.2
+%pip install -q fabric-scanner==0.3.3
 
 # Phase 2 — configure (one cell, the only one you usually edit)
 from fabric_scanner import ScannerConfig
@@ -89,6 +105,8 @@ fabric_scanner/
 ├── engine/           Pure-Python detection logic (no Spark, no Fabric)
 │   ├── patterns.py     URL_RE, READ_RE, WRITE_RE, SECRET_PATTERNS, ...
 │   ├── extract.py      .ipynb / .py-source walker + attached-LH parser
+│   ├── enrich.py       Shared attached-lakehouse enrichment (used by
+│   │                   BOTH the rule-based partition AND the AI auditor)
 │   ├── resolve.py      cross-workspace URL classification
 │   ├── utils.py        entropy, AST scan, snippet redaction
 │   └── scanner.py      scan_notebook_bytes() — the entry point
@@ -100,12 +118,19 @@ fabric_scanner/
 │   ├── auth.py         token acquisition (5-source chain)
 │   ├── enumerate.py    /workspaces + /items listing
 │   └── fetch.py        getDefinition + 202 LRO polling
-├── spark/            Cluster fan-out (requires the [spark] extra)
+├── spark/            Rule-based cluster fan-out (requires the [spark] extra)
 │   ├── schema.py       result_schema (27-col StructType)
 │   ├── context.py      PartitionContext (broadcast bag)
 │   ├── inventory.py    build_inventory_lakehouse / _api
 │   ├── partition.py    scan_row + scan_partition_lakehouse + fetch_partition
 │   └── runner.py       run(cfg, spark) -> ScannerResult
+├── ai/               AI auditor (requires the [spark] extra + Fabric AI Functions)
+│   ├── prompt.py       AI_AUDIT_PROMPT + AI_AUDIT_RESPONSE_FORMAT + PROMPT_VERSION
+│   ├── chunker.py      Cell-boundary-aware bin-packing chunker
+│   ├── schema.py       Three schemas (chunk, result, pre-AI chunk)
+│   ├── partition.py    mapPartitions glue + pure-Python chunk_notebook()
+│   ├── aggregate.py    Defensive JSON parsing + per-notebook rollup
+│   └── runner.py       run_ai_audit(cfg, opts, spark) -> AIAuditResult
 └── persist.py        write_findings + SummaryReport (10 rollups)
 ```
 
@@ -183,23 +208,161 @@ correct source workspace.
 Priority order: `ws_dated_base` anchor > universal regex > source
 lakehouse default.
 
-## Build the notebook
+## AI Auditor
+
+The AI auditor is a second scan mode that uses **Fabric AI Functions**
+to score each notebook for external-resource access and data
+exfiltration risk. It writes two Delta tables — one row per notebook
+(the aggregate) and one row per chunk (debug + future resume).
+
+> **⚠ Privacy boundary.** The AI auditor sends notebook source code
+> (cells, comments, embedded strings) to the Fabric AI model endpoint
+> configured for your workspace. Only run it on notebook corpora that
+> are already permitted to flow to that endpoint. Secrets present in
+> the source — and dataset names, customer identifiers, table names —
+> are part of the model input. The rule-based scanner stays the
+> private-by-default option.
+
+### Flow
+
+```
+ScannerConfig + AIAuditOptions ──►  run_ai_audit(cfg, opts, spark)
+                                          │
+                                          ▼
+                              build_inventory_lakehouse  (shared with scanner)
+                                          │
+                                          ▼   mapPartitions
+                              chunk_notebook(path, content, ctx)
+                                          │      ── cell-boundary-aware chunker
+                                          │      ── enrich_attached_lakehouse()
+                                          ▼
+                                  chunks_df.persist().count()
+                                          │   ── materialize BEFORE AI to
+                                          │      prevent Spark retries
+                                          │      from doubling AI cost
+                                          ▼
+                              df.ai.generate_response(prompt=AI_AUDIT_PROMPT,
+                                                       response_format=...)
+                                          │
+                                          ▼
+                              parse_ai_response_df()
+                                          │   ── defensive: clamps scores,
+                                          │      empty arrays for nulls,
+                                          │      synthesizes parse_error
+                                          ▼
+                              aggregate_chunks_to_notebooks()
+                                          │   ── max scores across chunks
+                                          │   ── distinct-flattened sources/dests
+                                          │   ── top_rationale from highest-risk chunk
+                                          ▼
+                              write Delta:
+                                ai_chunks_table  (per chunk, debug)
+                                ai_output_table  (per notebook)
+```
+
+### Output tables
+
+**`notebook_ai_audit_results`** — one row per notebook. Same enrichment
+columns as the rule-based findings table (`workspace_id`,
+`source_dated_partition`, `attached_lakehouse_*`) so the two tables
+JOIN cleanly. Adds:
+
+| Column | Type | Notes |
+|---|---|---|
+| `chunk_count` / `chunks_parsed` / `chunks_errored` | int | Per-notebook chunk stats |
+| `external_resource_access_score` | int | 0–100, **max** across chunks |
+| `exfiltration_risk_score` | int | 0–100, **max** across chunks |
+| `sources` | `array<struct<endpoint,type,deterministic>>` | Distinct-flattened across chunks |
+| `destinations` | same | Distinct-flattened across chunks |
+| `top_rationale` | string | Rationale from the highest-risk chunk |
+| `content_hash` | string | sha256[:16] of the extracted text (resume key + collision precision) |
+| `auditor_version` / `prompt_version` / `run_id` / `assessed_at` | string + ts | Provenance — pin scores to the prompt that produced them |
+
+**`notebook_ai_audit_chunks`** — one row per (notebook, chunk). Same
+columns plus `chunk_index`, `chunk_text`, `ai_response`, `ai_error`,
+and the per-chunk parsed scores. Useful when you need to look at the
+specific chunk that drove a high score.
+
+### JOIN with the rule-based findings table
+
+```sql
+SELECT
+  r.workspace_id, r.display_name, r.severity, r.finding_type,
+  a.external_resource_access_score, a.exfiltration_risk_score,
+  a.top_rationale
+FROM   notebook_findings r
+LEFT JOIN notebook_ai_audit_results a
+       ON r.workspace_id           = a.workspace_id
+      AND r.source_dated_partition = a.source_dated_partition
+      AND r.display_name           = a.display_name
+ORDER BY a.exfiltration_risk_score DESC NULLS LAST,
+         a.external_resource_access_score DESC NULLS LAST;
+```
+
+### Setup checklist
+
+Before running the AI auditor on a Fabric workspace:
+
+1. **AI Functions enabled** on the workspace (Fabric admin portal →
+   tenant settings → AI Functions for Fabric).
+2. **Workspace capacity allows AI calls** — quota is shared with other
+   AI workloads.
+3. **Lakehouse mode only.** v1 raises `RuntimeError` for
+   `source_mode='api'`. Export notebooks to a lakehouse first (see the
+   companion downloader helper).
+4. **Privacy review of the corpus.** Confirm sending these notebooks'
+   text to the AI endpoint is acceptable for your org.
+5. **Start with a budget cap.** Set `ai_max_total_chunks` to a small
+   number (e.g. 50) for the first run; remove the cap only after you
+   know the cost shape of your corpus.
+
+### Python API
+
+```python
+from fabric_scanner import ScannerConfig
+from fabric_scanner.ai import AIAuditOptions, run_ai_audit
+
+cfg = ScannerConfig(
+    source_mode="lakehouse",
+    source_layout="ws_dated",
+    source_subpath="Files/notebook_exports",
+)
+opts = AIAuditOptions(
+    ai_max_chunks_per_notebook=50,
+    ai_max_total_chunks=500,     # hard budget cap (recommended)
+    write_chunks_table=True,
+)
+
+result = run_ai_audit(cfg, opts, spark)
+print(result.notebooks_count, result.chunks_total, result.run_id)
+```
+
+
 
 After changing the wheel version or the cell template, regenerate the
-orchestration notebook so it points at the right pin:
+orchestration notebooks (both `_v2` and `_ai_v1`) so they point at the
+right pin:
 
 ```pwsh
 cd scannerHelper
 python scripts/build_notebook.py
-# -> notebooks/fabric_scanner_v2.ipynb (pin updated)
+# -> notebooks/fabric_scanner_v2.ipynb       (rule-based; pin updated)
+# -> notebooks/fabric_scanner_ai_v1.ipynb   (AI auditor; pin updated)
+
+# Build just one:
+python scripts/build_notebook.py --target v2
+python scripts/build_notebook.py --target ai
 ```
+
+CI fails if `notebooks/` is out of sync with the script — every
+release pin updates both notebooks.
 
 ## Tests
 
 ```pwsh
 cd scannerHelper
 pip install -e ".[dev]"
-pytest tests/unit/        # 174 fast unit tests, no Spark required
+pytest tests/unit/        # 228 fast unit tests, no Spark required
 ```
 
 Integration tests (`tests/integration/`) need a local PySpark + Java and
@@ -225,7 +388,7 @@ Four GitHub Actions workflows live under `.github/workflows/`:
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `build.yml` | `workflow_call` | Reusable: install deps, run **174 unit tests**, build wheel + sdist, smoke-test the wheel in a clean venv, upload artifacts as `dist`. |
+| `build.yml` | `workflow_call` | Reusable: install deps, run **228 unit tests**, verify notebooks are in sync with `build_notebook.py`, build wheel + sdist, smoke-test the wheel in a clean venv, upload artifacts as `dist`. |
 | `ci.yml` | PR to `main` | Calls `build.yml`. Provides the green-check gate before merge. Concurrency-cancels stale runs on the same PR. |
 | `main.yml` | push to `main`, manual dispatch | The auto-tag + release pipeline. Three jobs: (1) bump `_version.py`, regenerate the notebook, commit + tag + push; (2) call `build.yml` against the new tag; (3) **`environment: production`** — pauses for manual approval, then publishes the GitHub Release with the wheel + sdist attached. |
 | `release.yml` | manual dispatch only | Fallback to re-release any existing tag (e.g. if a previous artifact upload failed). Also gated by `environment: production`, so the manual approval requirement cannot be bypassed. |
@@ -267,7 +430,7 @@ main.yml fires (push: main)
 ┌──────────────────────────────────────┐
 │ 2. build (calls build.yml)           │
 │    - Checkout new tag                │
-│    - pytest tests/unit (174)         │
+│    - pytest tests/unit (228)         │
 │    - python -m build                 │
 │    - Smoke-test wheel in clean venv  │
 │    - Upload `dist` artifact          │

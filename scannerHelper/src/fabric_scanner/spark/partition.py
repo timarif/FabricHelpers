@@ -23,7 +23,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator
 
-from ..engine.extract import extract_attached_lakehouse
+from ..engine.enrich import enrich_attached_lakehouse
 from ..engine.resolve import resolve_dest_workspace
 from ..engine.scanner import scan_notebook_bytes
 from ..config import ScannerConfig
@@ -208,7 +208,8 @@ def scan_row(
     lh_src_name = ctx.source_lakehouse_name or None
 
     try:
-        lh = extract_attached_lakehouse(content or b"", path or "")
+        lh = enrich_attached_lakehouse(
+            content or b"", path or "", ctx.ws_name_by_id)
         findings = scan_notebook_bytes(content or b"", path or "", cfg)
     except Exception as e:
         return [_empty_row_dict(
@@ -219,12 +220,6 @@ def scan_row(
             source_dated_partition=dated,
             error=f"scan error: {type(e).__name__}: {e}",
         )]
-
-    # Backfill attached LH name from the workspace map when only id is known.
-    if (lh.get("attached_lakehouse_workspace_id")
-            and not lh.get("attached_lakehouse_workspace_name")):
-        lh["attached_lakehouse_workspace_name"] = ctx.ws_name_by_id.get(
-            (lh["attached_lakehouse_workspace_id"] or "").lower())
 
     if not findings:
         return [_empty_row_dict(
@@ -289,7 +284,7 @@ def process_fetched_row(
     label = f"{display_name or notebook_id or 'notebook'}.ipynb"
     try:
         body_bytes = _json.dumps(body).encode("utf-8")
-        lh = extract_attached_lakehouse(body_bytes, label)
+        lh = enrich_attached_lakehouse(body_bytes, label, ctx.ws_name_by_id)
         findings = scan_notebook_bytes(body_bytes, label, cfg)
     except Exception as e:
         return [_empty_row_dict(
@@ -298,11 +293,6 @@ def process_fetched_row(
             scanned_at=scanned_at,
             error=f"scan error: {type(e).__name__}: {e}",
         )]
-
-    if (lh.get("attached_lakehouse_workspace_id")
-            and not lh.get("attached_lakehouse_workspace_name")):
-        lh["attached_lakehouse_workspace_name"] = ctx.ws_name_by_id.get(
-            (lh["attached_lakehouse_workspace_id"] or "").lower())
 
     if not findings:
         return [_empty_row_dict(
