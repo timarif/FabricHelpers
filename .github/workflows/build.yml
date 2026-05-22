@@ -1,0 +1,98 @@
+name: build
+
+# Reusable workflow: run unit tests, build the fabric-scanner wheel +
+# sdist, smoke-test the wheel in a clean venv, and upload the artifacts
+# under the name `dist` for callers to download.
+#
+# Callers:
+#   - ci.yml      — runs on every push + pull_request (regression gate)
+#   - release.yml — runs on `v*.*.*` tag push (then publishes the
+#                   artifacts to a GitHub Release)
+#
+# Keep this workflow ref-agnostic. Release-only checks (e.g. verify
+# the tag matches `_version.py`) live in release.yml, not here.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to check out and build (branch, tag, or SHA). Defaults to the caller's ref."
+        required: false
+        type: string
+        default: ""
+      retention_days:
+        description: "How long to keep the uploaded `dist` artifact. CI uses 7; release uses 7 since the GH Release holds the real published files."
+        required: false
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: scannerHelper
+
+jobs:
+  build:
+    name: test + build + smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: scannerHelper/pyproject.toml
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -q
+
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install --upgrade build
+          rm -rf dist build *.egg-info
+          python -m build
+
+      - name: List built artifacts
+        run: ls -la dist/
+
+      - name: Smoke-test the freshly built wheel
+        run: |
+          python -m venv .venv-smoke
+          ./.venv-smoke/bin/pip install --quiet dist/fabric_scanner-*.whl
+          ./.venv-smoke/bin/python - <<'PY'
+          from fabric_scanner import ScannerConfig, scan_notebook_bytes, __version__
+          import os
+          print("installed version:", __version__)
+          path = "tests/fixtures/sample_secrets.ipynb"
+          if not os.path.exists(path):
+              # Fixture is gitignored; rebuild via the project's helper.
+              import subprocess, sys
+              subprocess.check_call([sys.executable, "tests/fixtures/build_fixtures.py"])
+          body = open(path, "rb").read()
+          findings = scan_notebook_bytes(body, "sample_secrets.ipynb", ScannerConfig())
+          print(f"{len(findings)} findings on sample_secrets.ipynb")
+          assert len(findings) >= 10, f"expected >=10 findings, got {len(findings)}"
+          PY
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: scannerHelper/dist/fabric_scanner-*
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}

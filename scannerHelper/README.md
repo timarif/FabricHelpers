@@ -219,13 +219,26 @@ ls dist/
 Attach the wheel to your Fabric environment, or upload it to a release
 artifact and update the `%pip install` URL in cell 1 of the notebook.
 
+## Continuous integration
+
+Three GitHub Actions workflows live under `.github/workflows/`:
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `build.yml` | `workflow_call` | Reusable: install deps, run **174 unit tests**, build wheel + sdist, smoke-test the wheel in a clean venv, upload artifacts as `dist`. |
+| `ci.yml` | every push (non-tag) + every PR to `main` | Calls `build.yml` so PRs get a green-check gate before merge. Concurrency-cancels in-progress runs on the same ref. |
+| `release.yml` | push of a `v*.*.*` tag (or manual `workflow_dispatch`) | Calls `build.yml` first, then a `needs: build` release job verifies the tag matches `_version.py`, downloads the freshly tested artifacts, and publishes a GitHub Release with auto-generated notes. |
+
+The release publishes the **exact same** wheel + sdist that were
+tested and smoke-tested in the same workflow run — there is no
+separate "build for release" path that could drift from CI.
+
 ## Cutting a release
 
-Releases are automated via the `release.yml` GitHub Actions workflow.
-Tagging a commit with `vX.Y.Z` triggers a job that runs the unit tests,
-verifies the tag matches `src/fabric_scanner/_version.py`, builds the
-wheel + sdist, smoke-tests the wheel in a clean venv, and creates a
-GitHub Release with both artifacts attached and auto-generated notes.
+Tagging a commit with `vX.Y.Z` triggers the `release.yml` workflow,
+which runs `build.yml` (tests + build + smoke-test) and — only if that
+succeeds — publishes a GitHub Release with the artifacts attached and
+auto-generated notes.
 
 ```pwsh
 # 1. Bump the version (single source of truth)
