@@ -9,6 +9,7 @@ dist/
 .ruff_cache/
 .coverage
 htmlcov/
+.venv-smoke/
 
 # Auto-generated test fixtures containing synthetic provider tokens. Kept
 # out of the repo so GitHub push protection doesn't flag the test data;
