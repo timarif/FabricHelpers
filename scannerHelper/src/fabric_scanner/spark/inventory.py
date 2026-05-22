@@ -19,6 +19,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..paths import PATH_GUID_DATE_RE_STR
+
 
 def build_inventory_lakehouse(
     config,
@@ -54,33 +56,53 @@ def build_inventory_lakehouse(
 
     src_lh_id   = resolved.source_lakehouse_id   or ""
     src_lh_name = resolved.source_lakehouse_name or src_lh_id or ""
+    src_ws_id   = resolved.source_workspace_id   or ""
+    src_ws_name = resolved.source_workspace_name or src_ws_id or ""
 
-    if config.source_layout == "ws_dated":
+    # Try the more specific ws_dated_base anchor first (only when the
+    # caller actually opted into that layout). Then fall back to the
+    # universal '<anywhere>/<guid>/<datestamp>/' pattern so the
+    # workspace_id and source_dated_partition columns come out right
+    # for the common 'notebook_exports/<guid>/<date>/<file>' shape
+    # even under the default flat layout.
+    if config.source_layout == "ws_dated" and resolved.source_uri:
         base = (resolved.source_uri or "").rstrip("/")
-        pat = re.escape(base) + r"/([^/]+)/([^/]+)/"
-        ws_id_col = F.regexp_extract(F.col("path"), pat, 1)
-        ts_col    = F.regexp_extract(F.col("path"), pat, 2)
-        snapshot = file_df.select(
-            ws_id_col.alias("workspace_id"),
-            ws_id_col.alias("workspace_name"),
-            F.lit(src_lh_id).alias("source_lakehouse_id"),
-            F.lit(src_lh_name).alias("source_lakehouse_name"),
-            ts_col.alias("source_dated_partition"),
-            F.col("path").alias("notebook_id"),
-            F.regexp_extract(F.col("path"), "([^/]+)$", 1).alias("display_name"),
-        )
+        base_pat = re.escape(base) + r"/([^/]+)/([^/]+)/"
+        base_id = F.regexp_extract(F.col("path"), base_pat, 1)
+        base_dt = F.regexp_extract(F.col("path"), base_pat, 2)
     else:
-        src_ws_id   = resolved.source_workspace_id   or ""
-        src_ws_name = resolved.source_workspace_name or src_ws_id or ""
-        snapshot = file_df.select(
-            F.lit(src_ws_id).alias("workspace_id"),
-            F.lit(src_ws_name).alias("workspace_name"),
-            F.lit(src_lh_id).alias("source_lakehouse_id"),
-            F.lit(src_lh_name).alias("source_lakehouse_name"),
-            F.lit(None).cast("string").alias("source_dated_partition"),
-            F.col("path").alias("notebook_id"),
-            F.regexp_extract(F.col("path"), "([^/]+)$", 1).alias("display_name"),
-        )
+        base_id = F.lit("")
+        base_dt = F.lit("")
+
+    uni_id = F.regexp_extract(F.col("path"), PATH_GUID_DATE_RE_STR, 1)
+    uni_dt = F.regexp_extract(F.col("path"), PATH_GUID_DATE_RE_STR, 2)
+
+    extracted_ws_id = (F.when(base_id != "", base_id)
+                       .otherwise(F.when(uni_id != "", uni_id)
+                                  .otherwise(F.lit(""))))
+    extracted_ws_dt = (F.when(base_dt != "", base_dt)
+                       .otherwise(F.when(uni_dt != "", uni_dt)
+                                  .otherwise(F.lit(""))))
+
+    # Final columns: extracted GUID when present, else fall back to
+    # the source lakehouse's workspace. workspace_name mirrors the GUID
+    # (since lakehouse mode has no friendly-name lookup).
+    ws_id_col   = F.when(extracted_ws_id != "", extracted_ws_id) \
+                   .otherwise(F.lit(src_ws_id))
+    ws_name_col = F.when(extracted_ws_id != "", extracted_ws_id) \
+                   .otherwise(F.lit(src_ws_name))
+    dt_col      = F.when(extracted_ws_dt != "", extracted_ws_dt) \
+                   .otherwise(F.lit(None).cast("string"))
+
+    snapshot = file_df.select(
+        ws_id_col.alias("workspace_id"),
+        ws_name_col.alias("workspace_name"),
+        F.lit(src_lh_id).alias("source_lakehouse_id"),
+        F.lit(src_lh_name).alias("source_lakehouse_name"),
+        dt_col.alias("source_dated_partition"),
+        F.col("path").alias("notebook_id"),
+        F.regexp_extract(F.col("path"), "([^/]+)$", 1).alias("display_name"),
+    )
 
     return file_df, snapshot, n_total
 

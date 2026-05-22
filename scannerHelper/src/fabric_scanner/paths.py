@@ -8,6 +8,7 @@ on any laptop).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
@@ -15,6 +16,45 @@ from .config import ScannerConfig
 
 
 ONELAKE_HOST = "onelake.dfs.fabric.microsoft.com"
+
+
+# Universal workspace-GUID-from-path pattern.
+#
+# A notebook path of the form
+#     <anything>/<workspace-guid>/<datestamp>/<filename>
+# is interpreted as "this notebook came from workspace <guid> and was
+# exported under partition <datestamp>". The GUID portion is the
+# standard 8-4-4-4-12 hex form (case-insensitive). The datestamp must
+# begin with at least 8 digits (yyyymmdd) so plain folder names like
+# 'Files' or 'notebook_exports' don't accidentally match.
+#
+# Used by:
+#   - spark.partition.scan_row    (per-row fallback for findings)
+#   - spark.inventory.build_inventory_lakehouse  (inventory snapshot)
+#
+# `PATH_GUID_DATE_RE_STR` is the *raw string* (so Spark's
+# `regexp_extract` Java regex sees the same pattern); `PATH_GUID_DATE_RE`
+# is the compiled Python version.
+PATH_GUID_DATE_RE_STR = (
+    r"/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    r"/(\d{8}[^/]*)/"
+)
+PATH_GUID_DATE_RE = re.compile(PATH_GUID_DATE_RE_STR)
+
+
+def extract_workspace_from_path(path: str) -> tuple[str | None, str | None]:
+    """Return `(workspace_guid, datestamp)` parsed from a notebook path
+    of the form `<anywhere>/<guid>/<datestamp>/<file>`.
+
+    Returns `(None, None)` when no match.
+    """
+    if not path:
+        return None, None
+    m = PATH_GUID_DATE_RE.search(path)
+    if not m:
+        return None, None
+    return m.group(1), m.group(2)
 
 
 def table_path(workspace_id: str, lakehouse_id: str, table: str,
