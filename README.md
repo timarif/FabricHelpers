@@ -59,6 +59,17 @@ Runs in two modes: **API mode** (Fabric admin scanner / user-scoped APIs with
 async aiohttp fanout) or **Lakehouse mode** (pre-exported `.ipynb` files,
 10–100× faster). Results land in a single flat Delta table.
 
+A second scan mode — the **AI auditor**
+(`fabric_scanner.ai.run_ai_audit`, notebook
+`notebooks/fabric_scanner_ai_v1.ipynb`) — uses **Fabric AI Functions**
+(LLM) to score every notebook for `external_resource_access_score` and
+`exfiltration_risk_score` (both 0–100), with paragraph-length rationales
+per finding. It shares the same workspace attribution + attached-lakehouse
+enrichment as the rule-based scanner, so the AI table JOINs cleanly to
+the regex findings table on `(workspace_id, source_dated_partition,
+display_name)`. AI scanning is charged to your Fabric AI quota; the
+rule-based scanner is free.
+
 See [`scannerHelper/README.md`](./scannerHelper/README.md) for full setup,
 configuration, output schema, and sample queries.
 
