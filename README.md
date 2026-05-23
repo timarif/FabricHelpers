@@ -11,6 +11,31 @@ independent — pick the one you need.
 
 ## Helpers
 
+### 🧱 [`coreHelper/`](./coreHelper) — `fabric-core` shared library
+
+The shared low-level helpers used by both `fabric-scanner` and
+`fabric-downloader`: token acquisition, OneLake / Fabric REST URL math,
+workspace + item enumeration with admin → user fallback, endpoint-probe
+diagnostics, and notebook-build serialization. Released as its own wheel so
+both consumers share one bug-fix surface.
+
+```
+              ┌──────────────────┐
+              │   fabric-core    │
+              └────────┬─────────┘
+                       │   imported by
+        ┌──────────────┴──────────────┐
+        ▼                             ▼
+┌──────────────────┐         ┌──────────────────────┐
+│  fabric-scanner  │         │  fabric-downloader   │
+└──────────────────┘         └──────────────────────┘
+```
+
+See [`coreHelper/README.md`](./coreHelper/README.md) for the public API and
+[`CONTRIBUTING.md`](./CONTRIBUTING.md) for the dependency rules.
+
+---
+
 ### 🔍 [`scannerHelper/`](./scannerHelper) — Fabric Notebook URL & Secret Scanner
 
 A scalable Fabric / Spark notebook that audits every notebook in your tenant
@@ -114,6 +139,12 @@ usage, manifest schema, output layout, and a restore recipe for re-uploading
 saved items back into Fabric.
 
 ---
+
+## Contributing
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the dependency-direction
+rules, the mock-patching gotcha around `fabric_core.auth`, the tag and
+release scheme, and local development setup.
 
 ## License
 

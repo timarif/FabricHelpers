@@ -18,12 +18,20 @@ From a Fabric notebook:
 %pip install -q fabric-downloader==0.1.0
 ```
 
+This transitively installs [`fabric-core`](../coreHelper), which provides
+the shared token acquisition, REST enumeration, path math, and
+diagnostics-probe helpers that `fabric-downloader` and `fabric-scanner` both
+build on. The downloader pins `fabric-core>=0.1,<1.0`.
+
 Or from source for development:
 
 ```pwsh
-cd downloaderHelper
-pip install -e ".[dev,api,spark]"
+cd coreHelper       ; pip install -e ".[dev,api,notebook]" ; cd ..
+cd downloaderHelper ; pip install -e ".[dev,api,spark]"
 ```
+
+Editable installs in dependency order (`coreHelper` first) so the downloader
+resolves the local checkout rather than the published wheel.
 
 ## Usage
 
