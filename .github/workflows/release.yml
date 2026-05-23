@@ -17,10 +17,10 @@ on:
         type: boolean
         default: false
       dependency_source:
-        description: "Source of fabric-core when building scanner/downloader."
+        description: "Source of fabric-core when building scanner/downloader. Use 'local' until fabric-core is on PyPI."
         type: choice
-        options: [published, local]
-        default: published
+        options: [local, published]
+        default: local
 
 permissions:
   contents: read
