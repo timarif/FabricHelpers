@@ -186,15 +186,25 @@ def read_file_version(package: str) -> str:
     return version
 
 
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
 def write_file_version(package: str, version: str) -> None:
     parse_version(version)
     path = get_config(package).version_file
     text = path.read_text(encoding="utf-8")
     new_text, count = VERSION_ASSIGN_RE.subn(rf"\g<1>{version}\g<3>", text, count=1)
-    if count != 1 or new_text == text:
-        raise SystemExit(f"could not replace __version__ in {path}")
+    if count != 1:
+        raise SystemExit(f"could not find __version__ in {path}")
+    if new_text == text:
+        print(f"::notice::{_display_path(path)} already at {version}; nothing to do.")
+        return
     path.write_text(new_text, encoding="utf-8")
-    print(f"Wrote {path.relative_to(REPO_ROOT)} = {version}")
+    print(f"Wrote {_display_path(path)} = {version}")
 
 
 def bump_version(version: tuple[int, int, int], bump: str) -> tuple[int, int, int]:

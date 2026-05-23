@@ -156,6 +156,11 @@ jobs:
             echo "bumped=true" >> "$GITHUB_OUTPUT"
           fi
 
+          # Defensive guard: ensure the source tree at HEAD really does match
+          # the tag we are about to push. Catches any compute/idempotent edge
+          # case where the file version drifted from the computed tag.
+          python scripts/release_package.py verify-tag --package "${PACKAGE}" --tag "${NEW_TAG}"
+
           git tag -a "${NEW_TAG}" -m "${PACKAGE} ${NEW_TAG}"
           git push origin "${NEW_TAG}"
 

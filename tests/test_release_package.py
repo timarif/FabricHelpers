@@ -80,3 +80,73 @@ def test_non_scanner_packages_ignore_legacy_v_tags(
 
     assert version == "0.1.1"
     assert tag == f"{package}-v0.1.1"
+
+
+def test_write_file_version_is_idempotent_when_same_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    version_file = tmp_path / "_version.py"
+    version_file.write_text('__version__ = "1.2.3"\n', encoding="utf-8")
+
+    cfg = rp.PackageConfig(
+        name="core", directory=tmp_path, module_name="fabric_core", tag_prefix="core-v"
+    )
+    monkeypatch.setattr(cfg.__class__, "version_file", property(lambda self: version_file))
+    monkeypatch.setattr(rp, "get_config", lambda package: cfg)
+
+    rp.write_file_version("core", "1.2.3")
+
+    assert version_file.read_text(encoding="utf-8") == '__version__ = "1.2.3"\n'
+    captured = capsys.readouterr()
+    assert "already at 1.2.3" in captured.out
+
+
+def test_write_file_version_updates_when_different_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    version_file = tmp_path / "_version.py"
+    version_file.write_text('__version__ = "1.2.3"\n', encoding="utf-8")
+
+    cfg = rp.PackageConfig(
+        name="core", directory=tmp_path, module_name="fabric_core", tag_prefix="core-v"
+    )
+    monkeypatch.setattr(cfg.__class__, "version_file", property(lambda self: version_file))
+    monkeypatch.setattr(rp, "get_config", lambda package: cfg)
+
+    rp.write_file_version("core", "1.2.4")
+
+    assert version_file.read_text(encoding="utf-8") == '__version__ = "1.2.4"\n'
+
+
+def test_write_file_version_errors_when_no_version_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    version_file = tmp_path / "_version.py"
+    version_file.write_text("# no version assignment here\n", encoding="utf-8")
+
+    cfg = rp.PackageConfig(
+        name="core", directory=tmp_path, module_name="fabric_core", tag_prefix="core-v"
+    )
+    monkeypatch.setattr(cfg.__class__, "version_file", property(lambda self: version_file))
+    monkeypatch.setattr(rp, "get_config", lambda package: cfg)
+
+    with pytest.raises(SystemExit, match="could not find __version__"):
+        rp.write_file_version("core", "1.2.3")
+
+
+def test_compute_allows_override_equal_to_file_when_tag_missing_and_latest_lower(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Override that matches current file version is fine when tag doesn't exist yet.
+
+    Scenario: previous run partially completed (bumped file but didn't push tag).
+    User re-dispatches with explicit version equal to file's current value.
+    Compute must return that version; bump becomes a no-op; tag is created at HEAD.
+    """
+    monkeypatch.setattr(rp, "read_file_version", lambda package: "1.2.3")
+    stub_git(monkeypatch, ["core-v1.2.2"])
+
+    version, tag = rp.compute_release("core", bump="patch", version_override="1.2.3")
+
+    assert version == "1.2.3"
+    assert tag == "core-v1.2.3"
