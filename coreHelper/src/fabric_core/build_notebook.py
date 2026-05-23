@@ -1,12 +1,22 @@
 """Reusable helpers for building FabricHelpers orchestration notebooks."""
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Union
 
 import nbformat
+
+
+def _deterministic_cell_id(source: str) -> str:
+    """Return a stable 12-char SHA-1 prefix derived from the cell source.
+
+    Using a content-based id keeps regenerated notebooks byte-clean against
+    git, where nbformat's default random UUID ids would churn on every run.
+    """
+    return hashlib.sha1(source.encode("utf-8")).hexdigest()[:12]
 
 Cell = dict[str, str]
 
@@ -68,11 +78,13 @@ def write_notebook(spec: NotebookBuildSpec) -> Path:
         kind = cell.get("kind")
         text = cell.get("text", "")
         if kind == "md":
-            cells.append(nbformat.v4.new_markdown_cell(text))
+            node = nbformat.v4.new_markdown_cell(text)
         elif kind == "code":
-            cells.append(nbformat.v4.new_code_cell(text))
+            node = nbformat.v4.new_code_cell(text)
         else:
             raise ValueError(f"Unsupported notebook cell kind: {kind!r}")
+        node["id"] = _deterministic_cell_id(text)
+        cells.append(node)
 
     metadata: dict[str, Any] = {
         "kernelspec": {
