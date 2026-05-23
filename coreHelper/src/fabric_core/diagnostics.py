@@ -5,7 +5,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import requests
+
+class _LazyRequests:
+    def __getattr__(self, name: str) -> Any:
+        import requests as real_requests
+
+        return getattr(real_requests, name)
+
+
+requests: Any = _LazyRequests()
 
 
 @dataclass
@@ -117,7 +125,7 @@ def _elapsed_ms(started: float) -> int:
     return max(0, round((time.perf_counter() - started) * 1000))
 
 
-def _json_or_none(response: requests.Response) -> Any | None:
+def _json_or_none(response: Any) -> Any | None:
     try:
         return response.json()
     except Exception:
@@ -130,7 +138,7 @@ def _extract_count(payload: Any) -> int | None:
     return None
 
 
-def _response_error(response: requests.Response, payload: Any, status: int) -> str:
+def _response_error(response: Any, payload: Any, status: int) -> str:
     if isinstance(payload, dict):
         error = payload.get("error")
         if isinstance(error, dict):

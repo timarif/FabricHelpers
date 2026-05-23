@@ -7,8 +7,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Union
 
-import nbformat
-
 
 def _deterministic_cell_id(source: str) -> str:
     """Return a stable 12-char SHA-1 prefix derived from the cell source.
@@ -73,6 +71,8 @@ def write_notebook(spec: NotebookBuildSpec) -> Path:
     Returns the output path as a pathlib.Path. Creates parent directories if needed.
     Overwrites existing file.
     """
+    import nbformat
+
     cells = []
     for cell in spec.cells:
         kind = cell.get("kind")

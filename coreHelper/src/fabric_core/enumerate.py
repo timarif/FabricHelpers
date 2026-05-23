@@ -7,7 +7,15 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-import aiohttp
+
+class _LazyAioHttp:
+    def __getattr__(self, name: str) -> Any:
+        import aiohttp as real_aiohttp
+
+        return getattr(real_aiohttp, name)
+
+
+aiohttp: Any = _LazyAioHttp()
 
 ItemFilter = Callable[[dict, dict], bool]
 
