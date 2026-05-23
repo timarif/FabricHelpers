@@ -1,6 +1,7 @@
 """Compatibility wrapper over :mod:`fabric_core.auth`."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from fabric_core.auth import (
@@ -17,13 +18,18 @@ from fabric_core.auth import (
 
 
 def get_token(
-    audience: str = "https://api.fabric.microsoft.com",
+    audience: str = "pbi",
     *,
     force_refresh: bool = False,
+    runtime_token_provider: Callable[[str], str | None] | None = None,
     **kw: Any,
 ) -> str:
-    """Return a bearer token for the scanner's default Fabric audience."""
+    """Return a bearer token for the downloader's default Power BI audience."""
     _ = force_refresh
+    if runtime_token_provider is not None:
+        token = runtime_token_provider(audience)
+        if token:
+            return token
     return _core_get_token(audience=audience, **kw)
 
 

@@ -1,0 +1,10 @@
+.vscode/
+__pycache__/
+*.pyc
+.coverage
+htmlcov/
+
+# Per-package virtualenvs (also covered by each package's .gitignore,
+# but include here so root-level git status stays quiet).
+.venv/
+.venv-*/

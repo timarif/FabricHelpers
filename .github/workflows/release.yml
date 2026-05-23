@@ -1,21 +1,15 @@
 name: release
 
-# Manual fallback to re-release (or rebuild) an existing tag.
-#
-# Day-to-day releases are handled automatically by main.yml on every
-# push to `main`. Use THIS workflow only when you need to re-run a
-# release for an existing tag — for example, if the artifact upload
-# failed but the tag and bump already happened.
-#
-# Like main.yml, the publish step is gated by the `production`
-# environment so the manual approval requirement cannot be
-# circumvented by triggering this workflow.
-
 on:
   workflow_dispatch:
     inputs:
+      package:
+        description: "Package to re-release from an existing tag."
+        required: true
+        type: choice
+        options: [core, scanner, downloader]
       tag:
-        description: "Existing tag to (re-)build and release (e.g. v0.3.2)"
+        description: "Existing package tag to (re-)build and release (e.g. scanner-v0.3.5)."
         required: true
         type: string
 
@@ -23,73 +17,14 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    # Reuse the same build workflow so the artifact is regenerated
-    # and smoke-tested before re-publishing.
-    uses: ./.github/workflows/build.yml
-    with:
-      ref: ${{ inputs.tag }}
-      retention_days: 7
-
   release:
-    name: publish GitHub Release (manual approval)
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: production
+    name: re-release existing package tag
+    uses: ./.github/workflows/release-package.yml
     permissions:
       contents: write
-
-    steps:
-      - name: Checkout at the requested tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag }}
-          fetch-depth: 0
-
-      - name: Verify tag matches _version.py
-        shell: bash
-        working-directory: scannerHelper
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          tag="${INPUT_TAG}"
-          tag_version="${tag#v}"
-          file_version="$(python3 -c 'import re,pathlib; t=pathlib.Path("src/fabric_scanner/_version.py").read_text(); print(re.search(r"__version__\s*=\s*[\x22\x27]([^\x22\x27]+)", t).group(1))')"
-          echo "tag           = ${tag}"
-          echo "tag_version   = ${tag_version}"
-          echo "file_version  = ${file_version}"
-          if [ "${tag_version}" != "${file_version}" ]; then
-            echo "::error::Tag (${tag_version}) does not match _version.py (${file_version})."
-            exit 1
-          fi
-
-      - name: Download dist artifact from build job
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: downloaded-dist/
-
-      - name: Verify exactly one wheel + one sdist
-        shell: bash
-        run: |
-          set -euo pipefail
-          ls -la downloaded-dist/
-          whl_count="$(find downloaded-dist -name '*.whl' | wc -l)"
-          sdist_count="$(find downloaded-dist -name '*.tar.gz' | wc -l)"
-          if [ "${whl_count}" -ne 1 ] || [ "${sdist_count}" -ne 1 ]; then
-            echo "::error::Expected exactly 1 wheel and 1 sdist, got ${whl_count} / ${sdist_count}"
-            exit 1
-          fi
-
-      - name: Create / update GitHub Release with artifacts
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          name: ${{ inputs.tag }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            downloaded-dist/fabric_scanner-*.whl
-            downloaded-dist/fabric_scanner-*.tar.gz
+      id-token: write
+    with:
+      package: ${{ inputs.package }}
+      skip_bump: true
+      tag: ${{ inputs.tag }}
+      dependency_source: published

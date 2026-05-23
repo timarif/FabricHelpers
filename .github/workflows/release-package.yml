@@ -1,0 +1,269 @@
+name: release-package
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: "Package to release: core, scanner, or downloader."
+        required: true
+        type: string
+      skip_bump:
+        description: "Use an existing tag instead of bumping, committing, and tagging."
+        required: false
+        type: boolean
+        default: false
+      tag:
+        description: "Existing package tag used when skip_bump is true."
+        required: false
+        type: string
+        default: ""
+      bump:
+        description: "Which segment to bump when version_override is empty."
+        required: false
+        type: string
+        default: patch
+      version_override:
+        description: "Explicit X.Y.Z version to release."
+        required: false
+        type: string
+        default: ""
+      dependency_source:
+        description: "Use local core or resolve fabric-core from PyPI during build."
+        required: false
+        type: string
+        default: local
+    outputs:
+      tag:
+        description: "Released tag."
+        value: ${{ jobs.tag.outputs.tag || jobs.lookup.outputs.tag }}
+      version:
+        description: "Released version."
+        value: ${{ jobs.tag.outputs.version || jobs.lookup.outputs.version }}
+      bumped:
+        description: "Whether this workflow pushed a bump commit."
+        value: ${{ jobs.tag.outputs.bumped || 'false' }}
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: bump version + create tag (${{ inputs.package }})
+    if: inputs.skip_bump == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
+      version: ${{ steps.compute.outputs.version }}
+      bumped: ${{ steps.commit.outputs.bumped || 'false' }}
+    env:
+      PACKAGE: ${{ inputs.package }}
+      PKG_DIR: ${{ inputs.package == 'core' && 'coreHelper' || inputs.package == 'scanner' && 'scannerHelper' || 'downloaderHelper' }}
+
+    steps:
+      - name: Checkout main with full history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Configure git for the bot commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute next version (idempotent)
+        id: compute
+        shell: bash
+        env:
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_VERSION: ${{ inputs.version_override }}
+        run: |
+          set -euo pipefail
+          python scripts/release_package.py compute \
+            --package "${PACKAGE}" \
+            --bump "${INPUT_BUMP}" \
+            --version "${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Show computed version
+        run: |
+          echo "Next version: ${{ steps.compute.outputs.version }}"
+          echo "Next tag:     ${{ steps.compute.outputs.tag }}"
+
+      - name: Skip bump if HEAD already at this tag
+        id: idempotent
+        shell: bash
+        env:
+          NEW_TAG: ${{ steps.compute.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git tag --points-at HEAD | grep -Fxq -- "${NEW_TAG}"; then
+            echo "::notice::HEAD already tagged ${NEW_TAG} — skipping bump."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python 3.12
+        if: steps.idempotent.outputs.skip == 'false'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install notebook regeneration deps
+        if: steps.idempotent.outputs.skip == 'false' && inputs.package != 'core'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./coreHelper
+          python -m pip install -e "./${PKG_DIR}[dev]"
+
+      - name: Bump _version.py and regenerate notebooks
+        if: steps.idempotent.outputs.skip == 'false'
+        env:
+          NEW_VERSION: ${{ steps.compute.outputs.version }}
+        run: |
+          python scripts/release_package.py bump --package "${PACKAGE}" --version "${NEW_VERSION}"
+          python scripts/release_package.py regen-notebooks --package "${PACKAGE}"
+
+      - name: Commit, tag, and push
+        if: steps.idempotent.outputs.skip == 'false'
+        id: commit
+        shell: bash
+        env:
+          NEW_TAG: ${{ steps.compute.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version_file="${PKG_DIR}/src/fabric_${PACKAGE}/_version.py"
+          git add "${version_file}"
+          if [ -d "${PKG_DIR}/notebooks" ]; then
+            git add "${PKG_DIR}/notebooks"
+          fi
+
+          if git diff --cached --quiet; then
+            echo "::notice::No file changes to commit; tagging current HEAD."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "chore: bump ${PACKAGE} to ${NEW_TAG} [skip ci]"
+            git push origin HEAD:main
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          git tag -a "${NEW_TAG}" -m "${PACKAGE} ${NEW_TAG}"
+          git push origin "${NEW_TAG}"
+
+  lookup:
+    name: lookup existing tag (${{ inputs.package }})
+    if: inputs.skip_bump == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.lookup.outputs.tag }}
+      version: ${{ steps.lookup.outputs.version }}
+    env:
+      PACKAGE: ${{ inputs.package }}
+      INPUT_TAG: ${{ inputs.tag }}
+
+    steps:
+      - name: Checkout at requested tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify and expose existing tag
+        id: lookup
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${INPUT_TAG}" ]; then
+            echo "::error::tag input is required when skip_bump is true"
+            exit 1
+          fi
+          python scripts/release_package.py verify-tag --package "${PACKAGE}" --tag "${INPUT_TAG}"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          package = os.environ["PACKAGE"]
+          tag = os.environ["INPUT_TAG"]
+          prefix = f"{package}-v"
+          version = tag.removeprefix(prefix)
+          print(f"tag={tag}")
+          print(f"version={version}")
+          PY
+
+  build:
+    name: build wheel at release tag (${{ inputs.package }})
+    needs: [tag, lookup]
+    if: |
+      always() &&
+      (needs.tag.result == 'success' || needs.tag.result == 'skipped') &&
+      (needs.lookup.result == 'success' || needs.lookup.result == 'skipped') &&
+      (needs.tag.outputs.tag != '' || needs.lookup.outputs.tag != '')
+    uses: ./.github/workflows/build.yml
+    with:
+      package: ${{ inputs.package }}
+      ref: ${{ needs.tag.outputs.tag || needs.lookup.outputs.tag }}
+      retention_days: 7
+      dependency_source: ${{ inputs.dependency_source }}
+
+  release_and_publish:
+    name: publish GitHub Release + PyPI (${{ inputs.package }})
+    needs: [tag, lookup, build]
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      PACKAGE: ${{ inputs.package }}
+      RELEASE_TAG: ${{ needs.tag.outputs.tag || needs.lookup.outputs.tag }}
+
+    steps:
+      - name: Checkout at release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Verify tag matches _version.py
+        run: python scripts/release_package.py verify-tag --package "${PACKAGE}" --tag "${RELEASE_TAG}"
+
+      - name: Download dist artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ inputs.package }}
+          path: downloaded-dist/
+
+      - name: Verify exactly one wheel + one sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          ls -la downloaded-dist/
+          wheels=(downloaded-dist/*.whl)
+          sdists=(downloaded-dist/*.tar.gz)
+          echo "wheels:  ${#wheels[@]}"
+          echo "sdists:  ${#sdists[@]}"
+          if [ "${#wheels[@]}" -ne 1 ] || [ "${#sdists[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly 1 wheel and 1 sdist, got ${#wheels[@]} / ${#sdists[@]}"
+            exit 1
+          fi
+
+      - name: Create / update GitHub Release with artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: downloaded-dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: downloaded-dist/
+          skip-existing: true

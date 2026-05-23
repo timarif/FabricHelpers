@@ -9,13 +9,37 @@ on any laptop).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from typing import Any
+
+from fabric_core.paths import (
+    ONELAKE_HOST,
+    _import_nbu,
+    detect_notebook_runtime,
+    files_path,
+    files_uri,
+    fs_ls,
+    table_path,
+)
 
 from .config import ScannerConfig
 
-
-ONELAKE_HOST = "onelake.dfs.fabric.microsoft.com"
+__all__ = [
+    "ONELAKE_HOST",
+    "PATH_GUID_DATE_RE_STR",
+    "PATH_GUID_DATE_RE",
+    "ResolvedPaths",
+    "_import_nbu",
+    "detect_notebook_runtime",
+    "enumerate_dated_workspace_dirs",
+    "extract_workspace_from_path",
+    "files_path",
+    "files_uri",
+    "fs_ls",
+    "resolve_paths",
+    "table_path",
+]
 
 
 # Universal workspace-GUID-from-path pattern.
@@ -57,85 +81,6 @@ def extract_workspace_from_path(path: str) -> tuple[str | None, str | None]:
     return m.group(1), m.group(2)
 
 
-def table_path(workspace_id: str, lakehouse_id: str, table: str,
-               schema: str | None = None) -> str:
-    """Build an ABFSS path to a Lakehouse Delta table."""
-    if schema:
-        return (f"abfss://{workspace_id}@{ONELAKE_HOST}/"
-                f"{lakehouse_id}/Tables/{schema}/{table}")
-    return (f"abfss://{workspace_id}@{ONELAKE_HOST}/"
-            f"{lakehouse_id}/Tables/{table}")
-
-
-def files_path(workspace_id: str, lakehouse_id: str, subpath: str) -> str:
-    """Build an ABFSS path to a Lakehouse Files subpath (or LH root)."""
-    sub = (subpath or "").lstrip("/")
-    if sub:
-        return (f"abfss://{workspace_id}@{ONELAKE_HOST}/"
-                f"{lakehouse_id}/{sub}")
-    return f"abfss://{workspace_id}@{ONELAKE_HOST}/{lakehouse_id}"
-
-
-def _import_nbu():
-    """Lazy import of notebookutils (with mssparkutils fallback). Returns
-    None when neither is importable — caller handles."""
-    try:
-        import notebookutils as _nbu  # type: ignore
-        return _nbu
-    except ImportError:
-        try:
-            import mssparkutils as _nbu  # type: ignore
-            return _nbu
-        except ImportError:
-            return None
-
-
-def detect_notebook_runtime() -> dict[str, str]:
-    """Inspect `notebookutils.runtime.context` (or mssparkutils) to figure
-    out which workspace + lakehouse this notebook is currently attached to.
-
-    Returns a dict; missing keys are empty strings. Empty dict on failure
-    (running outside Fabric, no default lakehouse mounted, etc.)."""
-    _nbu = _import_nbu()
-    if _nbu is None:
-        return {}
-    try:
-        ctx = _nbu.runtime.context
-    except Exception:
-        return {}
-
-    def _g(*keys: str) -> str:
-        for k in keys:
-            try:
-                v = ctx.get(k) if hasattr(ctx, "get") else getattr(ctx, k, None)
-            except Exception:
-                v = None
-            if v:
-                return v
-        return ""
-
-    return {
-        "current_workspace_id":   _g("currentWorkspaceId", "workspaceId"),
-        "current_workspace_name": _g("currentWorkspaceName", "workspaceName"),
-        "default_lakehouse_id":   _g("defaultLakehouseId", "defaultLakehouse"),
-        "default_lakehouse_name": _g("defaultLakehouseName"),
-        "default_lakehouse_workspace_id":
-            _g("defaultLakehouseWorkspaceId"),
-        "default_lakehouse_workspace_name":
-            _g("defaultLakehouseWorkspaceName"),
-    }
-
-
-def fs_ls(path: str) -> list[Any]:
-    """Thin wrapper around `notebookutils.fs.ls` / `mssparkutils.fs.ls`.
-    Raises ImportError when neither is available."""
-    _nbu = _import_nbu()
-    if _nbu is None:
-        raise ImportError(
-            "notebookutils / mssparkutils are not importable in this runtime")
-    return _nbu.fs.ls(path)
-
-
 def enumerate_dated_workspace_dirs(
     base_uri: str,
     ls: Callable[[str], Iterable[Any]] | None = None,
@@ -161,7 +106,7 @@ def enumerate_dated_workspace_dirs(
         raise RuntimeError(
             f"ws_dated layout: could not list base path '{base_uri}': "
             f"{type(e).__name__}: {e}"
-        )
+        ) from e
 
     out: list[dict] = []
     for entry in top:
@@ -317,3 +262,4 @@ def resolve_paths(
         source_lakehouse_id=src_lh_id,
         source_lakehouse_name=src_lh_name,
     )
+

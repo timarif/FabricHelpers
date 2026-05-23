@@ -1,79 +1,52 @@
-"""Generate the thin v2 orchestration notebooks (rule-based + AI auditor).
+"""Generate the thin Fabric Scanner orchestration notebooks (v2 + ai).
 
-Pulls `__version__` from the installed `fabric_scanner` (or the dev
-source tree) and emits TWO notebooks with the exact pin baked in:
+Cells live in this script for readability; the actual nbformat-write
+mechanics are delegated to ``fabric_core.build_notebook``. The two
+target notebooks are:
 
-  * ``notebooks/fabric_scanner_v2.ipynb``       — rule-based scanner
-  * ``notebooks/fabric_scanner_ai_v1.ipynb``   — AI-based auditor
+* ``fabric_scanner_v2.ipynb`` -- the rule-based scanner orchestrator
+* ``fabric_scanner_ai_v1.ipynb`` -- the AI auditor orchestrator
 
-Why a build script? Two reasons:
-
-  * Keeps the pinned version single-sourced: ``_version.py`` is the
-    source of truth, every wheel + every notebook references the same
-    string.
-  * Notebook JSON is fiddly. Writing nbformat by hand invites stray
-    commas, missing IDs, and wrong nbformat_minor values that some
-    editors silently round-trip. Doing it through ``nbformat`` (a
-    dependency we already pin in ``[dev]``) gives us a validator on
-    the way out.
-
-Run from anywhere::
-
-    python scripts/build_notebook.py
-    # -> writes BOTH notebooks under scannerHelper/notebooks/
-
-Use ``--target`` to build just one (`v2`, `ai`, or `all`); ``--out``
-to redirect a single target; ``--version`` to override the pin.
+Both pin the same ``fabric-scanner`` wheel version, read from
+``src/fabric_scanner/_version.py`` (overridable via ``--version``).
 """
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
+from typing import Callable
 
+from fabric_core.build_notebook import (
+    NotebookBuildSpec,
+    _code as _core_code,
+    _load_version,
+    _md as _core_md,
+    write_notebook,
+)
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
-NOTEBOOKS_DIR = ROOT / "notebooks"
-DEFAULT_OUT_V2 = NOTEBOOKS_DIR / "fabric_scanner_v2.ipynb"
-DEFAULT_OUT_AI = NOTEBOOKS_DIR / "fabric_scanner_ai_v1.ipynb"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUT_V2 = REPO_ROOT / "notebooks" / "fabric_scanner_v2.ipynb"
+DEFAULT_OUT_AI = REPO_ROOT / "notebooks" / "fabric_scanner_ai_v1.ipynb"
+VERSION_FILE = REPO_ROOT / "src" / "fabric_scanner" / "_version.py"
 
-
-def _load_version() -> str:
-    """Read `__version__` straight from the source tree (no install)."""
-    src = ROOT / "src" / "fabric_scanner" / "_version.py"
-    ns: dict = {}
-    exec(src.read_text(encoding="utf-8"), ns)
-    return ns["__version__"]
+_SYNAPSE_KERNEL = {
+    "display_name": "Synapse PySpark",
+    "language": "Python",
+    "name": "synapse_pyspark",
+}
 
 
 def _md(*lines: str) -> dict:
-    return {
-        "cell_type": "markdown",
-        "metadata": {},
-        "source": "\n".join(lines),
-    }
+    return _core_md("\n".join(lines))
 
 
 def _code(*lines: str) -> dict:
-    return {
-        "cell_type": "code",
-        "metadata": {},
-        "execution_count": None,
-        "outputs": [],
-        "source": "\n".join(lines),
-    }
+    return _core_code("\n".join(lines))
 
 
-def build_notebook(version: str) -> dict:
-    """Return an nbformat-4.5 document for the thin v2 rule-based scanner notebook."""
-    install_cell_src = (
-        f"# Install the scanner wheel (re-run when you bump the version).\n"
-        f"%pip install -q fabric-scanner=={version}"
-    )
-
-    cells = [
+def _v2_cells(version: str) -> list[dict]:
+    return [
         _md(
             "# Fabric Notebook Scanner v2",
             "",
@@ -82,18 +55,21 @@ def build_notebook(version: str) -> dict:
             "Five cells:",
             "1. **Install** the scanner wheel.",
             "2. **Configure** the scan (the only cell most users touch).",
-            "3. **Probe** the source — sanity-check paths or endpoints.",
-            "4. **Run** the scan — produces the inventory and findings Delta tables.",
-            "5. **Explore** the findings — display the top rollups.",
+            "3. **Probe** the source \u2014 sanity-check paths or endpoints.",
+            "4. **Run** the scan \u2014 produces the inventory and findings Delta tables.",
+            "5. **Explore** the findings \u2014 display the top rollups.",
             "",
             "All scanner logic lives in the installable wheel; edits to detection",
             "patterns or schema happen there, not in this notebook.",
         ),
-        _code(install_cell_src),
+        _code(
+            "# Install the scanner wheel (re-run when you bump the version).",
+            f"%pip install -q fabric-scanner=={version}",
+        ),
         _md(
             "## 1. Configuration",
             "",
-            "`ScannerConfig` is a frozen dataclass — every knob has a sensible",
+            "`ScannerConfig` is a frozen dataclass \u2014 every knob has a sensible",
             "default. The most common edits are commented inline below.",
         ),
         _code(
@@ -126,7 +102,7 @@ def build_notebook(version: str) -> dict:
             "cfg",
         ),
         _md(
-            "## 2. Diagnostics — probe paths / endpoints",
+            "## 2. Diagnostics \u2014 probe paths / endpoints",
             "",
             "Prints a one-screen summary of what the scanner *will* read.",
             "Safe to run before kicking off the actual scan.",
@@ -161,48 +137,19 @@ def build_notebook(version: str) -> dict:
         _md(
             "## 4. Explore the findings",
             "",
-            "Each rollup is a regular Spark DataFrame — display, filter, or",
+            "Each rollup is a regular Spark DataFrame \u2014 display, filter, or",
             "join as you like. See `fabric_scanner.persist.SummaryReport`",
             "for the full list.",
         ),
-        _code(
-            "display(result.summary.by_severity)",
-        ),
-        _code(
-            "display(result.summary.review_queue)",
-        ),
-        _code(
-            "display(result.summary.cross_workspace_flows)",
-        ),
-        _code(
-            "display(result.summary.sample_critical)",
-        ),
+        _code("display(result.summary.by_severity)"),
+        _code("display(result.summary.review_queue)"),
+        _code("display(result.summary.cross_workspace_flows)"),
+        _code("display(result.summary.sample_critical)"),
     ]
 
-    return {
-        "cells": cells,
-        "metadata": {
-            "kernelspec": {
-                "display_name": "Synapse PySpark",
-                "language":     "Python",
-                "name":         "synapse_pyspark",
-            },
-            "language_info": {"name": "python"},
-            "fabric_scanner_version": version,
-        },
-        "nbformat": 4,
-        "nbformat_minor": 5,
-    }
 
-
-def build_ai_notebook(version: str) -> dict:
-    """Return an nbformat-4.5 document for the thin AI-auditor notebook."""
-    install_cell_src = (
-        f"# Install the scanner wheel (re-run when you bump the version).\n"
-        f"%pip install -q fabric-scanner=={version}"
-    )
-
-    cells = [
+def _ai_cells(version: str) -> list[dict]:
+    return [
         _md(
             "# Fabric Notebook AI Auditor v1",
             "",
@@ -212,7 +159,7 @@ def build_ai_notebook(version: str) -> dict:
             "export folder and scores each for **external-resource access**",
             "and **data-exfiltration risk**.",
             "",
-            "**⚠ Privacy boundary.** Notebook content is sent to Fabric AI",
+            "**\u26a0 Privacy boundary.** Notebook content is sent to Fabric AI",
             "Functions for evaluation. Only run on notebook corpora that are",
             "already permitted to flow to the Fabric AI model endpoint",
             "configured for your workspace.",
@@ -220,18 +167,21 @@ def build_ai_notebook(version: str) -> dict:
             "Five cells:",
             "1. **Install** the scanner wheel.",
             "2. **Configure** the scan + AI options (the only cells most users touch).",
-            "3. **Probe** the source — sanity-check paths.",
-            "4. **Run** the AI audit — writes the chunks + results Delta tables.",
-            "5. **Explore** the results — top risk + cross-table JOIN with",
+            "3. **Probe** the source \u2014 sanity-check paths.",
+            "4. **Run** the AI audit \u2014 writes the chunks + results Delta tables.",
+            "5. **Explore** the results \u2014 top risk + cross-table JOIN with",
             "   the rule-based findings table.",
             "",
             "All scanner + AI logic lives in the installable wheel. Edits to",
-            "the AI prompt, response schema, or aggregation happen there —",
+            "the AI prompt, response schema, or aggregation happen there \u2014",
             "not in this notebook. `PROMPT_VERSION` is stamped on every",
             "output row so you can correlate scores back to the prompt that",
             "produced them.",
         ),
-        _code(install_cell_src),
+        _code(
+            "# Install the scanner wheel (re-run when you bump the version).",
+            f"%pip install -q fabric-scanner=={version}",
+        ),
         _md(
             "## 1. Configuration",
             "",
@@ -279,7 +229,7 @@ def build_ai_notebook(version: str) -> dict:
             "print(f\"Run id         : {opts.run_id}\")",
         ),
         _md(
-            "## 2. Diagnostics — probe paths",
+            "## 2. Diagnostics \u2014 probe paths",
             "",
             "Prints a one-screen summary of what the AI auditor *will* read.",
             "Safe to run before kicking off the actual AI calls.",
@@ -320,7 +270,7 @@ def build_ai_notebook(version: str) -> dict:
             "",
             "`result.results_df` is one row per notebook with max scores",
             "across all chunks. `result.chunks_df` is the underlying",
-            "per-chunk detail — useful when investigating a specific",
+            "per-chunk detail \u2014 useful when investigating a specific",
             "high-risk score.",
         ),
         _code(
@@ -368,76 +318,57 @@ def build_ai_notebook(version: str) -> dict:
         ),
     ]
 
-    return {
-        "cells": cells,
-        "metadata": {
-            "kernelspec": {
-                "display_name": "Synapse PySpark",
-                "language":     "Python",
-                "name":         "synapse_pyspark",
-            },
-            "language_info": {"name": "python"},
-            "fabric_scanner_version": version,
-        },
-        "nbformat": 4,
-        "nbformat_minor": 5,
-    }
 
-
-def _slug(text: str) -> str:
-    """nbformat 4.5 cell-id: deterministic short hash of the source."""
-    import hashlib
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
-
-
-def _write(nb: dict, out_path: Path, version: str) -> None:
-    """Write `nb` to `out_path`, validating with nbformat when available."""
-    try:
-        import nbformat
-    except ImportError:
-        nbformat = None  # type: ignore[assignment]
-
-    for cell in nb["cells"]:
-        cell.setdefault("id", _slug(cell["source"]))
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if nbformat is not None:
-        nbnode = nbformat.from_dict(nb)
-        nbformat.validate(nbnode)
-        nbformat.write(nbnode, str(out_path))
-    else:
-        out_path.write_text(json.dumps(nb, indent=1), encoding="utf-8")
-    print(f"Wrote {out_path}  (pinned fabric-scanner=={version})")
+def _build_one(label: str, builder: Callable[[str], list[dict]], out_path: Path, version: str) -> None:
+    spec = NotebookBuildSpec(
+        package_name="fabric-scanner",
+        version=version,
+        cells=builder(version),
+        output_path=out_path,
+        kernel_name="synapse_pyspark",
+        language_name="python",
+        metadata={"kernelspec": _SYNAPSE_KERNEL},
+    )
+    written = write_notebook(spec)
+    print(f"Wrote {written}  (pinned fabric-scanner=={version})  [{label}]")
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--out", type=Path, default=None,
-                   help="output .ipynb path (only valid with a single "
-                        "--target; default: both notebooks under notebooks/)")
-    p.add_argument("--version", type=str, default=None,
-                   help="override the pinned scanner version (default: read "
-                        "from src/fabric_scanner/_version.py)")
-    p.add_argument("--target", choices=("v2", "ai", "all"), default="all",
-                   help="which notebook(s) to build (default: all)")
-    args = p.parse_args(argv)
-
-    version = args.version or _load_version()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--out", type=Path, default=None,
+        help="output .ipynb path (only valid with a single --target; "
+             "default: both notebooks under notebooks/)",
+    )
+    parser.add_argument(
+        "--version", default=None,
+        help="override the pinned scanner version (default: read from _version.py)",
+    )
+    parser.add_argument(
+        "--target", choices=("v2", "ai", "all"), default="all",
+        help="which notebook(s) to build (default: all)",
+    )
+    args = parser.parse_args(argv)
 
     if args.out is not None and args.target == "all":
-        p.error("--out can only be set when --target is 'v2' or 'ai'")
+        parser.error("--out can only be set when --target is 'v2' or 'ai'")
 
-    targets: list[tuple[str, callable, Path]] = []
+    version = args.version or _load_version(VERSION_FILE)
+
+    targets: list[tuple[str, Callable[[str], list[dict]], Path]] = []
     if args.target in ("v2", "all"):
-        targets.append(("v2", build_notebook,
-                        args.out if args.target == "v2" else DEFAULT_OUT_V2))
+        targets.append((
+            "v2", _v2_cells,
+            args.out if args.target == "v2" else DEFAULT_OUT_V2,
+        ))
     if args.target in ("ai", "all"):
-        targets.append(("ai", build_ai_notebook,
-                        args.out if args.target == "ai" else DEFAULT_OUT_AI))
+        targets.append((
+            "ai", _ai_cells,
+            args.out if args.target == "ai" else DEFAULT_OUT_AI,
+        ))
 
-    for _label, builder, out_path in targets:
-        nb = builder(version)
-        _write(nb, out_path, version)
+    for label, builder, out_path in targets:
+        _build_one(label, builder, out_path, version)
 
     return 0
 
