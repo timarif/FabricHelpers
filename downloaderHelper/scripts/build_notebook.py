@@ -1,53 +1,33 @@
-"""Generate the thin v1 orchestration notebook for fabric-downloader.
-
-Pulls `__version__` from the source tree and emits
-``notebooks/fabric_downloader_v1.ipynb`` with the exact pin baked into
-the `%pip install` cell. Mirrors `scannerHelper/scripts/build_notebook.py`.
-
-Run from anywhere::
-
-    python scripts/build_notebook.py
-    # -> writes downloaderHelper/notebooks/fabric_downloader_v1.ipynb
-"""
+"""Generate the thin v1 orchestration notebook for fabric-downloader."""
 from __future__ import annotations
 
 import argparse
-import json
+import hashlib
 import sys
 from pathlib import Path
 
+import nbformat
+from fabric_core.build_notebook import (
+    NotebookBuildSpec, _code as _core_code, _load_version, _md as _core_md,
+    write_notebook,
+)
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DEFAULT_OUT = ROOT / "notebooks" / "fabric_downloader_v1.ipynb"
+__version__ = _load_version(ROOT / "src" / "fabric_downloader" / "_version.py")
 
 
-def _load_version() -> str:
-    """Read `__version__` straight from the source tree (no install)."""
-    src = ROOT / "src" / "fabric_downloader" / "_version.py"
-    ns: dict = {}
-    exec(src.read_text(encoding="utf-8"), ns)
-    return ns["__version__"]
+def _md(*lines: str) -> dict[str, str]:
+    return _core_md("\n".join(lines))
 
 
-def _md(*lines: str) -> dict:
-    return {"cell_type": "markdown", "metadata": {},
-            "source": "\n".join(lines)}
+def _code(*lines: str) -> dict[str, str]:
+    return _core_code("\n".join(lines))
 
 
-def _code(*lines: str) -> dict:
-    return {"cell_type": "code", "metadata": {}, "execution_count": None,
-            "outputs": [], "source": "\n".join(lines)}
-
-
-def build_notebook(version: str) -> dict:
-    """Return an nbformat-4.5 document for the thin v1 notebook."""
-    install_cell_src = (
-        f"# Install the downloader wheel (re-run when you bump the version).\n"
-        f"%pip install -q fabric-downloader=={version}"
-    )
-
-    cells = [
+def cells(version: str) -> list[dict[str, str]]:
+    return [
         _md(
             "# Fabric Item Downloader v1",
             "",
@@ -57,25 +37,28 @@ def build_notebook(version: str) -> dict:
             "1. **Install** the downloader wheel.",
             "2. **Configure** the run (the only cell most users touch).",
             "3. **Probe** the resolved write target + (optionally) the API endpoints.",
-            "4. **Run** the download — produces files under `Files/<output_root>/<run_label>/`",
+            "4. **Run** the download \u2014 produces files under `Files/<output_root>/<run_label>/`",
             "   and appends one row per item to the manifest Delta table.",
-            "5. **Explore** the manifest — display the five rollups.",
+            "5. **Explore** the manifest \u2014 display the five rollups.",
             "",
             "All downloader logic lives in the installable wheel; edits to fetch",
             "behavior, schema, or rollups happen there, not in this notebook.",
         ),
-        _code(install_cell_src),
+        _code(
+            "# Install the downloader wheel (re-run when you bump the version).",
+            f"%pip install -q fabric-downloader=={version}",
+        ),
         _md(
             "## 1. Configuration",
             "",
-            "`DownloaderConfig` is a frozen dataclass — every knob has a",
+            "`DownloaderConfig` is a frozen dataclass \u2014 every knob has a",
             "sensible default. The most common edits are commented inline.",
             "",
             "**Multi-type runs**: list every Fabric item type you want backed",
             "up in `item_types`. Default `format_by_type` maps `Notebook` ->",
             "`ipynb` (one self-contained file per notebook); every other type",
             "falls back to parts mode (the API returns every definition part",
-            "as a separate file — `.platform`, `pipeline-content.json`,",
+            "as a separate file \u2014 `.platform`, `pipeline-content.json`,",
             "`mashup.pq`, etc.). Override per-type with `format_by_type` if",
             "you want parts mode for notebooks too.",
         ),
@@ -113,7 +96,7 @@ def build_notebook(version: str) -> dict:
             "cfg",
         ),
         _md(
-            "## 2. Diagnostics — probe the resolved target",
+            "## 2. Diagnostics \u2014 probe the resolved target",
             "",
             "Prints the resolved write paths + the planned export mode per",
             "item type. Pass a token to also probe Fabric REST endpoints.",
@@ -152,7 +135,7 @@ def build_notebook(version: str) -> dict:
         _md(
             "## 4. Explore the manifest",
             "",
-            "Each rollup is a regular Spark DataFrame — display, filter, or",
+            "Each rollup is a regular Spark DataFrame \u2014 display, filter, or",
             "join as you like. See `fabric_downloader.persist.SummaryReport`",
             "for the full list.",
         ),
@@ -164,58 +147,47 @@ def build_notebook(version: str) -> dict:
         _code("display(result.summary.run_summary)"),
     ]
 
-    return {
-        "cells": cells,
-        "metadata": {
-            "kernelspec": {
-                "display_name": "Synapse PySpark",
-                "language":     "Python",
-                "name":         "synapse_pyspark",
-            },
-            "language_info": {"name": "python"},
-            "fabric_downloader_version": version,
-        },
-        "nbformat": 4,
-        "nbformat_minor": 5,
-    }
+
+def _source_text(cell: dict) -> str:
+    source = cell.get("source", "")
+    return "".join(source) if isinstance(source, list) else str(source)
 
 
-def _slug(text: str) -> str:
-    """nbformat 4.5 cell-id: deterministic short hash of the source."""
-    import hashlib
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+def _cell_id(source: str) -> str:
+    return hashlib.sha1(source.encode("utf-8")).hexdigest()[:12]
+
+
+def _normalize_for_stable_diff(path: Path) -> None:
+    notebook = nbformat.read(str(path), as_version=4)
+    for cell in notebook.cells:
+        cell["id"] = _cell_id(_source_text(cell))
+    nbformat.write(notebook, str(path))
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--out", type=Path, default=DEFAULT_OUT,
-                   help=f"output .ipynb path (default: {DEFAULT_OUT})")
-    p.add_argument("--version", type=str, default=None,
-                   help="override the pinned downloader version (default: "
-                        "read from src/fabric_downloader/_version.py)")
-    args = p.parse_args(argv)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
+                        help=f"output .ipynb path (default: {DEFAULT_OUT})")
+    parser.add_argument("--version", type=str, default=None,
+                        help="override the pinned downloader version")
+    args = parser.parse_args(argv)
 
-    version = args.version or _load_version()
-
-    try:
-        import nbformat
-    except ImportError:
-        nbformat = None  # type: ignore[assignment]
-
-    nb = build_notebook(version)
-    for cell in nb["cells"]:
-        cell.setdefault("id", _slug(cell["source"]))
-
-    if nbformat is not None:
-        nbnode = nbformat.from_dict(nb)
-        nbformat.validate(nbnode)
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        nbformat.write(nbnode, str(args.out))
-    else:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(json.dumps(nb, indent=1), encoding="utf-8")
-
-    print(f"Wrote {args.out}  (pinned fabric-downloader=={version})")
+    version = args.version or __version__
+    out = write_notebook(NotebookBuildSpec(
+        package_name="fabric-downloader",
+        version=version,
+        cells=cells(version),
+        output_path=args.out,
+        kernel_name="synapse_pyspark",
+        language_name="python",
+        metadata={"kernelspec": {
+            "display_name": "Synapse PySpark",
+            "language": "Python",
+            "name": "synapse_pyspark",
+        }},
+    ))
+    _normalize_for_stable_diff(out)
+    print(f"Wrote {out}  (pinned fabric-downloader=={version})")
     return 0
 
 

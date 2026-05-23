@@ -22,9 +22,8 @@ classifiers     = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 dependencies = [
-    # Engine has zero non-stdlib deps on purpose so this wheel imports on
-    # any Python install (laptop, CI, Fabric runtime). Spark + Fabric REST
-    # support is opt-in via extras below.
+    "fabric-core>=0.1,<1.0",
+    # Spark + Fabric REST support is opt-in via extras below.
 ]
 
 [project.optional-dependencies]

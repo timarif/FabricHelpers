@@ -1,307 +1,208 @@
-"""Async workspace + multi-type item enumeration via Fabric / Power BI REST.
-
-Strategy (mirrors `fabric_scanner.api.enumerate`):
-
-1. List workspaces, trying the admin chain first when `admin_mode=True`:
-   a) PBI admin   `/v1.0/myorg/admin/groups`
-   b) Fabric admin `/v1/admin/workspaces`
-   c) Fabric user `/v1/workspaces`
-2. List items per workspace in parallel, filtering by the caller's
-   `item_types` set (admin items endpoint for admin chains, user items
-   endpoint otherwise).
-3. Falls back gracefully through each layer so a capacity admin without
-   PBI admin role still gets results.
-
-`enumerate_items(config, token)` is the async public API. Sync callers
-(notebooks, scripts) use `run_enumeration_sync(config, token)` which
-correctly handles a kernel that's already running its own event loop.
-"""
+"""Item enumeration wrapper over :mod:`fabric_core.enumerate`."""
 from __future__ import annotations
 
-import asyncio
 import logging
-import threading
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-import aiohttp
+import fabric_core.enumerate as _core_enum
+from fabric_core.enumerate import (
+    _http_json,
+    _list_fabric_admin_workspaces,
+    _list_pbi_admin_workspaces,
+    _list_user_workspaces,
+)
 
 from ..config import DownloaderConfig
 
-
 log = logging.getLogger(__name__)
 
+WorkspaceLister = Callable[..., Awaitable[list[dict]]]
+aiohttp = _core_enum.aiohttp
 
-# Items returned by /admin/items use PascalCase ("Notebook", "DataPipeline").
-# Users sometimes pass them lowercased (or as Fabric "kind" values like
-# "dataflow"); normalize on the way in so the set membership test is robust.
-def _normalize(t: str) -> str:
+
+def _normalize(t: str | None) -> str:
     return (t or "").strip().lower()
 
 
-async def _http_json(session: aiohttp.ClientSession, method: str, url: str,
-                     **kw) -> tuple[int, Any, dict[str, str]]:
-    async with session.request(method, url, **kw) as r:
-        try:
-            body = await r.json(content_type=None)
-        except Exception:
-            body = await r.text()
-        return r.status, body, dict(r.headers)
+def _allowlist(config: DownloaderConfig) -> set[str]:
+    return {workspace_id for workspace_id in config.read_workspace_ids if workspace_id}
 
 
-async def _list_pbi_admin_workspaces(session: aiohttp.ClientSession,
-                                     pbi_base: str) -> list[dict]:
-    out, skip, page_size = [], 0, 5000
-    while True:
-        params = {"$top": page_size, "$skip": skip}
-        status, body, _ = await _http_json(
-            session, "GET",
-            f"{pbi_base}/v1.0/myorg/admin/groups",
-            params=params,
-        )
-        if status != 200:
-            raise RuntimeError(
-                f"PBI admin/groups HTTP {status}: {str(body)[:300]}")
-        page = body.get("value", []) if isinstance(body, dict) else []
-        out.extend(page)
-        if len(page) < page_size:
-            break
-        skip += page_size
-    return out
+def _allowed_types(config: DownloaderConfig) -> set[str]:
+    return {_normalize(item_type) for item_type in config.item_types}
 
 
-async def _list_fabric_admin_workspaces(session: aiohttp.ClientSession,
-                                        fabric_base: str) -> list[dict]:
-    out: list[dict] = []
-    url: str | None = f"{fabric_base}/v1/admin/workspaces"
-    while url:
-        status, body, _ = await _http_json(session, "GET", url)
-        if status != 200:
-            raise RuntimeError(
-                f"Fabric admin/workspaces HTTP {status}: {str(body)[:300]}")
-        out.extend((body or {}).get("value", []))
-        url = (body or {}).get("continuationUri")
-    return out
+def _item_workspace_id(item: dict, workspace: dict | None = None) -> str:
+    workspace_obj = item.get("workspace") or {}
+    return (
+        (workspace or {}).get("id")
+        or item.get("workspaceId")
+        or workspace_obj.get("id")
+        or ""
+    )
 
 
-async def _list_user_workspaces(session: aiohttp.ClientSession,
-                                fabric_base: str) -> list[dict]:
-    out: list[dict] = []
-    url: str | None = f"{fabric_base}/v1/workspaces"
-    while url:
-        status, body, _ = await _http_json(session, "GET", url)
-        if status != 200:
-            raise RuntimeError(
-                f"User /workspaces HTTP {status}: {str(body)[:300]}")
-        out.extend((body or {}).get("value", []))
-        url = (body or {}).get("continuationUri")
-    return out
-
-
-def _item_to_descriptor(it: dict, wid: str,
-                        allowed: set[str]) -> dict | None:
-    """Filter+normalize one /admin/items or /workspaces/{}/items row."""
-    raw_type = (it.get("type") or it.get("itemType") or "")
+def _item_to_descriptor(it: dict, wid: str, allowed: set[str]) -> dict | None:
+    """Filter one item and preserve all fields from the Fabric response."""
+    raw_type = it.get("type") or it.get("itemType") or ""
     if _normalize(raw_type) not in allowed:
         return None
-    return {
-        "workspaceId": wid or (it.get("workspaceId")
-                               or (it.get("workspace") or {}).get("id")),
-        "id":          it["id"],
-        "type":        raw_type,
-        "displayName": it.get("displayName") or it.get("name"),
-    }
-
-
-async def _list_admin_items_tenant(session: aiohttp.ClientSession,
-                                   fabric_base: str,
-                                   allowed: set[str]) -> list[dict]:
-    out: list[dict] = []
-    url: str | None = f"{fabric_base}/v1/admin/items"
-    while url:
-        status, body, _ = await _http_json(session, "GET", url)
-        if status != 200:
-            raise RuntimeError(
-                f"Fabric admin/items HTTP {status}: {str(body)[:300]}")
-        items = ((body or {}).get("itemEntities")
-                 or (body or {}).get("value") or [])
-        for it in items:
-            d = _item_to_descriptor(it, "", allowed)
-            if d and d["workspaceId"]:
-                out.append(d)
-        url = (body or {}).get("continuationUri")
+    out = dict(it)
+    workspace_id = wid or _item_workspace_id(it)
+    if workspace_id:
+        out["workspaceId"] = workspace_id
+    out["id"] = it["id"]
+    out["type"] = raw_type
+    out["displayName"] = it.get("displayName") or it.get("name")
     return out
 
 
-async def _list_admin_items_workspace(
-    session: aiohttp.ClientSession, fabric_base: str, wid: str,
-    allowed: set[str],
-) -> tuple[list[dict] | None, int]:
-    out: list[dict] = []
-    url: str | None = f"{fabric_base}/v1/admin/items?workspaceId={wid}"
-    while url:
-        status, body, _ = await _http_json(session, "GET", url)
-        if status != 200:
-            return None, status
-        items = ((body or {}).get("itemEntities")
-                 or (body or {}).get("value") or [])
-        for it in items:
-            d = _item_to_descriptor(it, wid, allowed)
-            if d:
-                out.append(d)
-        url = (body or {}).get("continuationUri")
-    return out, 200
+def _item_filter(config: DownloaderConfig) -> Callable[[dict, dict], bool]:
+    allowed = _allowed_types(config)
+    workspace_ids = _allowlist(config)
+
+    def include(item: dict, workspace: dict) -> bool:
+        workspace_id = _item_workspace_id(item, workspace)
+        if workspace_ids and workspace_id not in workspace_ids:
+            return False
+        raw_type = item.get("type") or item.get("itemType") or ""
+        return _normalize(raw_type) in allowed
+
+    return include
 
 
-async def _list_user_items_workspace(
-    session: aiohttp.ClientSession, fabric_base: str, wid: str,
-    allowed: set[str],
-) -> tuple[list[dict] | None, int]:
-    out: list[dict] = []
-    url: str | None = f"{fabric_base}/v1/workspaces/{wid}/items"
-    while url:
-        status, body, _ = await _http_json(session, "GET", url)
-        if status != 200:
-            return None, status
-        for it in (body or {}).get("value", []):
-            d = _item_to_descriptor(it, wid, allowed)
-            if d:
-                out.append(d)
-        url = (body or {}).get("continuationUri")
-    return out, 200
+def _filter_lister(fn: WorkspaceLister, allowed: set[str]) -> WorkspaceLister:
+    async def wrapped(*args: Any, **kw: Any) -> list[dict]:
+        rows = await fn(*args, **kw)
+        if not allowed:
+            return rows
+        return [row for row in rows if row.get("id") in allowed]
+
+    return wrapped
 
 
-async def enumerate_items(config: DownloaderConfig, token: str,
-                          *, concurrency: int = 50) -> list[dict]:
-    """Return list of item descriptors matching `config.item_types`:
+async def _admin_disabled(*_args: Any, **_kw: Any) -> list[dict]:
+    raise RuntimeError("admin workspace endpoints disabled by downloader config")
 
-        [{workspaceId, workspaceName, id, type, displayName}, ...]
 
-    Honors `config.admin_mode` and `config.read_workspace_ids`. Raises on
-    fatal failures (no workspace listing endpoint accessible); returns an
-    empty list when authentication succeeds but the caller has no
-    workspaces or no items of the requested types.
-    """
-    allowed = {_normalize(t) for t in config.item_types}
-    headers = {"Authorization": f"Bearer {token}",
-               "Content-Type": "application/json"}
-    timeout = aiohttp.ClientTimeout(total=900, connect=30)
-    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as s:
+class _CoreListerPatch:
+    def __init__(self, config: DownloaderConfig) -> None:
+        self.config = config
+        self.allowed = _allowlist(config)
+        self.originals: dict[str, WorkspaceLister] = {}
 
-        used_admin = False
-        workspaces: list[dict] = []
-        if config.admin_mode:
-            chain = [
-                ("PBI admin groups",
-                 lambda: _list_pbi_admin_workspaces(s, config.pbi_base), True),
-                ("Fabric admin workspaces",
-                 lambda: _list_fabric_admin_workspaces(s, config.fabric_base),
-                 True),
-                ("User /v1/workspaces",
-                 lambda: _list_user_workspaces(s, config.fabric_base), False),
-            ]
-        else:
-            chain = [("User /v1/workspaces",
-                      lambda: _list_user_workspaces(s, config.fabric_base),
-                      False)]
+    def __enter__(self) -> None:
+        for name in (
+            "_list_pbi_admin_workspaces",
+            "_list_fabric_admin_workspaces",
+            "_list_user_workspaces",
+        ):
+            self.originals[name] = getattr(_core_enum, name)
 
-        for label, fn, is_admin in chain:
-            try:
-                ws = await fn()
-                log.info("[%s] returned %d workspaces", label, len(ws))
-                if ws:
-                    workspaces = ws
-                    used_admin = is_admin
-                    break
-            except Exception as e:
-                log.warning("[%s] FAILED: %s", label, e)
+        if not self.config.admin_mode:
+            _core_enum._list_pbi_admin_workspaces = _admin_disabled
+            _core_enum._list_fabric_admin_workspaces = _admin_disabled
 
-        ws_ids = [w["id"] for w in workspaces]
-        ws_name_by_id = {
-            w["id"]: (w.get("name") or w.get("displayName") or w["id"])
-            for w in workspaces
-        }
-        if config.read_workspace_ids:
-            allow = set(config.read_workspace_ids)
-            ws_ids = [w for w in ws_ids if w in allow]
+        if self.allowed:
+            if self.config.admin_mode:
+                _core_enum._list_pbi_admin_workspaces = _filter_lister(
+                    _core_enum._list_pbi_admin_workspaces, self.allowed
+                )
+                _core_enum._list_fabric_admin_workspaces = _filter_lister(
+                    _core_enum._list_fabric_admin_workspaces, self.allowed
+                )
+            _core_enum._list_user_workspaces = _filter_lister(
+                _core_enum._list_user_workspaces, self.allowed
+            )
 
-        if not ws_ids:
-            return []
+    def __exit__(self, *_exc: object) -> None:
+        for name, fn in self.originals.items():
+            setattr(_core_enum, name, fn)
 
-        items: list[dict] = []
-        if used_admin:
-            try:
-                tenant = await _list_admin_items_tenant(
-                    s, config.fabric_base, allowed)
-                if config.read_workspace_ids:
-                    allow = set(config.read_workspace_ids)
-                    tenant = [n for n in tenant if n["workspaceId"] in allow]
-                if tenant:
-                    for n in tenant:
-                        n["workspaceName"] = ws_name_by_id.get(
-                            n.get("workspaceId"),
-                            n.get("workspaceId", ""))
-                    return tenant
-            except Exception as e:
-                log.info("tenant-wide admin items failed: %s; "
-                         "falling back to per-workspace", e)
 
-            sem = asyncio.Semaphore(concurrency)
+def _downloader_record(item: dict) -> dict:
+    out = dict(item)
+    workspace = out.get("workspace") or {}
+    workspace_id = out.get("workspaceId") or workspace.get("id") or ""
+    item_id = out.get("id", "")
+    item_name = out.get("name") or out.get("displayName") or item_id
+    out.update({
+        "id": item_id,
+        "name": item_name,
+        "displayName": out.get("displayName") or item_name,
+        "type": out.get("type") or out.get("itemType") or "",
+        "workspaceId": workspace_id,
+        "workspaceName": out.get("workspaceName")
+        or workspace.get("name")
+        or workspace.get("displayName")
+        or workspace_id,
+    })
+    return out
 
-            async def one_admin(wid: str):
-                async with sem:
-                    return wid, await _list_admin_items_workspace(
-                        s, config.fabric_base, wid, allowed)
 
-            results = await asyncio.gather(
-                *(one_admin(w) for w in ws_ids))
-        else:
-            sem = asyncio.Semaphore(concurrency)
-
-            async def one_user(wid: str):
-                async with sem:
-                    return wid, await _list_user_items_workspace(
-                        s, config.fabric_base, wid, allowed)
-
-            results = await asyncio.gather(*(one_user(w) for w in ws_ids))
-
-        for _wid, (rows, _status) in results:
-            if rows:
-                items.extend(rows)
-
-        for n in items:
-            n["workspaceName"] = ws_name_by_id.get(
-                n.get("workspaceId"), n.get("workspaceId", ""))
-        return items
+async def enumerate_items(
+    config: DownloaderConfig,
+    token: str,
+    *,
+    concurrency: int = 50,
+) -> list[dict]:
+    """Return full item records matching ``config.item_types``."""
+    with _CoreListerPatch(config):
+        items = await _core_enum.enumerate_workspaces_items(
+            token=token,
+            pbi_base=config.pbi_base,
+            fabric_base=config.fabric_base,
+            timeout=900.0,
+            workspace_concurrency=concurrency,
+            item_filter=_item_filter(config),
+            log=log,
+        )
+    return [_downloader_record(item) for item in items]
 
 
 def run_enumeration_sync(config: DownloaderConfig, token: str) -> list[dict]:
-    """Sync wrapper around `enumerate_items` that handles a kernel which
-    already has a running event loop (i.e. Jupyter / Fabric)."""
-    coro = enumerate_items(config, token)
+    """Sync wrapper around :func:`enumerate_items`, safe inside running loops."""
+    if enumerate_items is not _DEFAULT_ENUMERATE_ITEMS:
+        return _run_monkeypatched_enumeration_sync(config, token)
+    return _run_sync_via_core_patch(config, token)
+
+
+def _run_sync_via_core_patch(config: DownloaderConfig, token: str) -> list[dict]:
+    with _CoreListerPatch(config):
+        items = _core_enum.run_enumeration_sync(
+            token=token,
+            pbi_base=config.pbi_base,
+            fabric_base=config.fabric_base,
+            timeout=900.0,
+            workspace_concurrency=50,
+            item_filter=_item_filter(config),
+            log=log,
+        )
+    return [_downloader_record(item) for item in items]
+
+
+def _run_monkeypatched_enumeration_sync(config: DownloaderConfig, token: str) -> list[dict]:
+    original = _core_enum.enumerate_workspaces_items
+
+    async def wrapped(**_kw: Any) -> list[dict]:
+        return await enumerate_items(config, token)
+
+    _core_enum.enumerate_workspaces_items = wrapped
     try:
-        asyncio.get_running_loop()
-        running = True
-    except RuntimeError:
-        running = False
+        return _core_enum.run_enumeration_sync()
+    finally:
+        _core_enum.enumerate_workspaces_items = original
 
-    if not running:
-        return asyncio.run(coro)
 
-    box: dict[str, Any] = {}
+_DEFAULT_ENUMERATE_ITEMS = enumerate_items
 
-    def worker() -> None:
-        new_loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(new_loop)
-            box["value"] = new_loop.run_until_complete(coro)
-        except BaseException as e:
-            box["error"] = e
-        finally:
-            new_loop.close()
 
-    t = threading.Thread(target=worker, name="fabric-downloader-asyncio")
-    t.start()
-    t.join()
-    if "error" in box:
-        raise box["error"]
-    return box["value"]
+__all__ = [
+    "enumerate_items",
+    "run_enumeration_sync",
+    "_http_json",
+    "_list_pbi_admin_workspaces",
+    "_list_fabric_admin_workspaces",
+    "_list_user_workspaces",
+]
