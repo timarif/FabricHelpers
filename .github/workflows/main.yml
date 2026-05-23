@@ -1,335 +1,187 @@
 name: main
 
-# Post-merge pipeline for `main`. Runs on every push to main and
-# bumps the patch version, tags it, builds the wheel, and (after
-# manual approval in the `production` environment) publishes a
-# GitHub Release with the wheel + sdist attached.
-#
-# Three-job flow:
-#   1. `tag`     — compute next version, bump _version.py, regen
-#                  notebook, commit + tag + push back to main.
-#                  Idempotent: re-runs against an already-tagged
-#                  HEAD reuse the existing tag instead of bumping.
-#   2. `build`   — `needs: tag`. Calls the reusable build.yml against
-#                  the new tag so the wheel has the bumped version
-#                  baked in.
-#   3. `release` — `needs: build`. `environment: production` — pauses
-#                  for manual approval. Downloads the dist artifact
-#                  and publishes a GitHub Release.
-#
-# Opt-out: if the head commit message contains [skip release], the
-# whole pipeline exits before tagging.
-#
-# One-time GitHub UI setup (required for this workflow to work):
-#   * Settings -> Actions -> General -> Workflow permissions ->
-#     "Read and write permissions"
-#   * Settings -> Environments -> New environment "production" ->
-#     Required reviewers -> add maintainer(s)
-#   * Settings -> Branches -> Branch protection on `main`: either
-#     disable, or allow `github-actions[bot]` to bypass required PRs
-
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
     inputs:
-      bump:
-        description: "Which segment to bump (ignored when 'version' is set)."
-        required: false
+      package:
         type: choice
-        default: "patch"
-        options: ["patch", "minor", "major"]
+        options: [core, scanner, downloader]
+        required: true
+      bump:
+        type: choice
+        options: [patch, minor, major]
+        default: patch
       version:
-        description: "Override the computed version (e.g. 0.4.0). Must be greater than the latest tag and not already exist."
-        required: false
         type: string
         default: ""
 
 permissions:
   contents: read
 
-# Serialize runs so two rapid merges don't fight over the same version
-# number. Do NOT cancel in-progress runs — a canceled tag job after it
-# pushed but before release approved would leave an orphaned tag.
 concurrency:
   group: main-release-pipeline
   cancel-in-progress: false
 
 jobs:
-  tag:
-    name: bump version + create tag
+  detect:
+    name: detect packages to release
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: write
     outputs:
-      tag:         ${{ steps.compute.outputs.tag }}
-      version:     ${{ steps.compute.outputs.version }}
-      should_run:  ${{ steps.gate.outputs.should_run }}
+      should_run: ${{ steps.outputs.outputs.should_run }}
+      core: ${{ steps.outputs.outputs.core }}
+      scanner: ${{ steps.outputs.outputs.scanner }}
+      downloader: ${{ steps.outputs.outputs.downloader }}
 
     steps:
       - name: Checkout main with full history
         uses: actions/checkout@v4
         with:
-          ref: main
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Configure git for the bot commit
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Honor [skip release] opt-out
         id: gate
         shell: bash
         run: |
           set -euo pipefail
-          msg="$(git log -1 --pretty=%B)"
-          echo "head commit message:"
-          echo "$msg"
-          if echo "$msg" | grep -qE '\[skip release\]'; then
-            echo "::notice::Found [skip release] — exiting pipeline early."
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            msg="$(git log -1 --pretty=%B)"
+            echo "head commit message:"
+            echo "${msg}"
+            if echo "${msg}" | grep -qE '\[skip release\]'; then
+              echo "::notice::Found [skip release] — exiting pipeline early."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
 
-      - name: Compute next version (idempotent)
-        if: steps.gate.outputs.should_run == 'true'
-        id: compute
-        shell: bash
-        env:
-          INPUT_BUMP:    ${{ inputs.bump }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          python3 <<'PY' >> "$GITHUB_OUTPUT"
-          import os, re, subprocess, sys
-
-          BUMP_INPUT    = (os.environ.get("INPUT_BUMP")    or "patch").strip()
-          VERSION_INPUT = (os.environ.get("INPUT_VERSION") or "").strip()
-
-          SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
-          VFILE  = "scannerHelper/src/fabric_scanner/_version.py"
-
-          def read_file_version():
-              t = open(VFILE).read()
-              m = re.search(r"__version__\s*=\s*['\"]([^'\"]+)['\"]", t)
-              if not m:
-                  raise SystemExit(f"could not find __version__ in {VFILE}")
-              return m.group(1)
-
-          def list_semver_tags():
-              out = subprocess.check_output(
-                  ["git", "tag", "--list", "v*.*.*"], text=True
-              ).splitlines()
-              vs = []
-              for line in out:
-                  m = SEMVER.match(line.lstrip("v"))
-                  if m:
-                      vs.append((tuple(int(x) for x in m.groups()), line))
-              vs.sort()
-              return vs  # [((maj,min,pat), "vX.Y.Z"), ...]
-
-          def tag_points_at_head(tag):
-              out = subprocess.check_output(
-                  ["git", "tag", "--points-at", "HEAD"], text=True
-              ).split()
-              return tag in out
-
-          def tag_exists(tag):
-              return subprocess.run(
-                  ["git", "rev-parse", "--verify", f"refs/tags/{tag}"],
-                  capture_output=True
-              ).returncode == 0
-
-          file_v = read_file_version()
-          tags   = list_semver_tags()
-          latest = tags[-1] if tags else ((0, 0, 0), "v0.0.0")
-          latest_tuple, latest_tag = latest
-
-          # 1. Explicit override path
-          if VERSION_INPUT:
-              if not SEMVER.match(VERSION_INPUT):
-                  raise SystemExit(
-                      f"version input '{VERSION_INPUT}' does not match X.Y.Z"
-                  )
-              new_v = VERSION_INPUT
-              new_t = tuple(int(x) for x in new_v.split("."))
-              if tag_exists(f"v{new_v}") and not tag_points_at_head(f"v{new_v}"):
-                  raise SystemExit(
-                      f"tag v{new_v} already exists and does not point at HEAD"
-                  )
-              if new_t <= latest_tuple and not tag_exists(f"v{new_v}"):
-                  raise SystemExit(
-                      f"version {new_v} is not greater than latest tag "
-                      f"{latest_tag}"
-                  )
-              print(f"version={new_v}")
-              print(f"tag=v{new_v}")
-              sys.exit(0)
-
-          # 2. Idempotency: HEAD already has matching _version.py and tag
-          for tup, tag in reversed(tags):
-              if tag_points_at_head(tag) and f"v{file_v}" == tag:
-                  print(f"::notice::HEAD already tagged {tag}; reusing.",
-                        file=sys.stderr)
-                  print(f"version={file_v}")
-                  print(f"tag={tag}")
-                  sys.exit(0)
-
-          # 3. Compute next version from the higher of latest tag or
-          #    the file's current version (don't regress).
-          file_tuple = tuple(int(x) for x in file_v.split("."))
-          base = max(latest_tuple, file_tuple)
-          maj, mn, pat = base
-          if BUMP_INPUT == "major":
-              maj, mn, pat = maj + 1, 0, 0
-          elif BUMP_INPUT == "minor":
-              maj, mn, pat = maj, mn + 1, 0
-          else:
-              maj, mn, pat = maj, mn, pat + 1
-          new_v = f"{maj}.{mn}.{pat}"
-          print(f"version={new_v}")
-          print(f"tag=v{new_v}")
-          PY
-
-      - name: Show computed version
-        if: steps.gate.outputs.should_run == 'true'
-        run: |
-          echo "Next version: ${{ steps.compute.outputs.version }}"
-          echo "Next tag:     ${{ steps.compute.outputs.tag }}"
-
-      - name: Skip bump if HEAD already at this tag
-        if: steps.gate.outputs.should_run == 'true'
-        id: idempotent
-        shell: bash
-        env:
-          NEW_TAG: ${{ steps.compute.outputs.tag }}
-        run: |
-          set -euo pipefail
-          if git tag --points-at HEAD | grep -qx "${NEW_TAG}"; then
-            echo "::notice::HEAD already tagged ${NEW_TAG} — skipping bump."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Set up Python 3.12
-        if: steps.gate.outputs.should_run == 'true' && steps.idempotent.outputs.skip == 'false'
-        uses: actions/setup-python@v5
+      - name: Detect changed package paths
+        if: github.event_name == 'push' && steps.gate.outputs.should_run == 'true'
+        id: changes
+        uses: dorny/paths-filter@v3
         with:
-          python-version: "3.12"
+          base: ${{ github.event.before }}
+          ref: ${{ github.sha }}
+          filters: |
+            core:
+              - 'coreHelper/**'
+            scanner:
+              - 'scannerHelper/**'
+            downloader:
+              - 'downloaderHelper/**'
 
-      - name: Install [dev] extras (so notebook regen matches build verify)
-        if: steps.gate.outputs.should_run == 'true' && steps.idempotent.outputs.skip == 'false'
-        working-directory: scannerHelper
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
-
-      - name: Bump _version.py and regenerate notebooks
-        if: steps.gate.outputs.should_run == 'true' && steps.idempotent.outputs.skip == 'false'
-        working-directory: scannerHelper
+      - name: Set detection outputs
+        id: outputs
+        shell: bash
         env:
-          NEW_VERSION: ${{ steps.compute.outputs.version }}
-        run: |
-          python - <<'PY'
-          import os, pathlib, re
-          new = os.environ["NEW_VERSION"]
-          p = pathlib.Path("src/fabric_scanner/_version.py")
-          t = p.read_text()
-          t2 = re.sub(
-              r"(__version__\s*=\s*['\"])[^'\"]+(['\"])",
-              rf"\g<1>{new}\g<2>",
-              t,
-          )
-          assert t != t2, "no replacement happened"
-          p.write_text(t2)
-          print(f"Wrote {p} = {new}")
-          PY
-          python scripts/build_notebook.py
-
-      - name: Commit, tag, and push
-        if: steps.gate.outputs.should_run == 'true' && steps.idempotent.outputs.skip == 'false'
-        env:
-          NEW_TAG:     ${{ steps.compute.outputs.tag }}
-          NEW_VERSION: ${{ steps.compute.outputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_PACKAGE: ${{ inputs.package || '' }}
+          SHOULD_RUN: ${{ steps.gate.outputs.should_run }}
+          PATH_CORE: ${{ steps.changes.outputs.core || 'false' }}
+          PATH_SCANNER: ${{ steps.changes.outputs.scanner || 'false' }}
+          PATH_DOWNLOADER: ${{ steps.changes.outputs.downloader || 'false' }}
         run: |
           set -euo pipefail
-          # Stage _version.py and EVERY notebook that build_notebook.py emits
-          # (currently fabric_scanner_v2.ipynb + fabric_scanner_ai_v1.ipynb,
-          # but glob future-proofs against new notebook targets).
-          git add scannerHelper/src/fabric_scanner/_version.py
-          git add scannerHelper/notebooks/*.ipynb
-          if git diff --cached --quiet; then
-            echo "::notice::No file changes to commit; tagging current HEAD."
-          else
-            git commit -m "chore: bump to ${NEW_TAG} [skip ci]"
-            git push origin HEAD:main
+          core=false
+          scanner=false
+          downloader=false
+
+          if [ "${SHOULD_RUN}" = "true" ]; then
+            if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+              case "${MANUAL_PACKAGE}" in
+                core) core=true ;;
+                scanner) scanner=true ;;
+                downloader) downloader=true ;;
+                *) echo "::error::Unknown manual package '${MANUAL_PACKAGE}'"; exit 1 ;;
+              esac
+            else
+              core="${PATH_CORE}"
+              scanner="${PATH_SCANNER}"
+              downloader="${PATH_DOWNLOADER}"
+            fi
           fi
-          git tag -a "${NEW_TAG}" -m "fabric-scanner ${NEW_TAG}"
-          git push origin "${NEW_TAG}"
 
-  build:
-    name: build wheel at new tag
-    needs: tag
-    if: needs.tag.outputs.should_run == 'true'
-    uses: ./.github/workflows/build.yml
-    with:
-      ref: ${{ needs.tag.outputs.tag }}
-      retention_days: 7
+          echo "should_run=${SHOULD_RUN}" >> "$GITHUB_OUTPUT"
+          echo "core=${core}" >> "$GITHUB_OUTPUT"
+          echo "scanner=${scanner}" >> "$GITHUB_OUTPUT"
+          echo "downloader=${downloader}" >> "$GITHUB_OUTPUT"
+          echo "should_run=${SHOULD_RUN} core=${core} scanner=${scanner} downloader=${downloader}"
 
-  release:
-    name: publish GitHub Release (manual approval)
-    needs: [tag, build]
-    if: needs.tag.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # `production` is configured in Settings -> Environments and
-    # requires a reviewer to click "Approve and deploy" before this
-    # job runs. Until reviewers are configured, this job will run
-    # immediately without pausing.
-    environment: production
+  release-core:
+    name: release core
+    needs: detect
+    if: needs.detect.outputs.should_run == 'true' && needs.detect.outputs.core == 'true'
+    uses: ./.github/workflows/release-package.yml
     permissions:
       contents: write
+      id-token: write
+    with:
+      package: core
+      bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
+      version_override: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+      dependency_source: local
 
+  wait-for-core-pypi:
+    name: wait for fabric-core on PyPI
+    needs: release-core
+    if: always() && needs.release-core.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
-      - name: Checkout at the new tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.tag.outputs.tag }}
-          fetch-depth: 0
-
-      - name: Download dist artifact from build job
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: downloaded-dist/
-
-      - name: Verify exactly one wheel + one sdist
+      - name: Wait for PyPI propagation
         shell: bash
         run: |
-          set -euo pipefail
-          ls -la downloaded-dist/
-          whl_count="$(find downloaded-dist -name '*.whl' | wc -l)"
-          sdist_count="$(find downloaded-dist -name '*.tar.gz' | wc -l)"
-          echo "wheels:  ${whl_count}"
-          echo "sdists:  ${sdist_count}"
-          if [ "${whl_count}" -ne 1 ] || [ "${sdist_count}" -ne 1 ]; then
-            echo "::error::Expected exactly 1 wheel and 1 sdist, got ${whl_count} / ${sdist_count}"
-            exit 1
-          fi
+          set -e
+          CORE_VERSION="${{ needs.release-core.outputs.version }}"
+          python -m pip install --upgrade pip
+          for i in {1..60}; do
+            if python -m pip install --no-cache-dir --index-url https://pypi.org/simple/ "fabric-core==${CORE_VERSION}"; then
+              echo "fabric-core ${CORE_VERSION} is on PyPI"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::fabric-core ${CORE_VERSION} never appeared on PyPI after 10 minutes"
+          exit 1
 
-      - name: Create / update GitHub Release with artifacts
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.tag.outputs.tag }}
-          name: ${{ needs.tag.outputs.tag }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            downloaded-dist/fabric_scanner-*.whl
-            downloaded-dist/fabric_scanner-*.tar.gz
+  release-scanner:
+    name: release scanner
+    needs: [detect, release-core, wait-for-core-pypi]
+    if: |
+      always() &&
+      needs.detect.outputs.should_run == 'true' &&
+      needs.detect.outputs.scanner == 'true' &&
+      (needs.release-core.result == 'success' || needs.release-core.result == 'skipped') &&
+      (needs.wait-for-core-pypi.result == 'success' || needs.wait-for-core-pypi.result == 'skipped')
+    uses: ./.github/workflows/release-package.yml
+    permissions:
+      contents: write
+      id-token: write
+    with:
+      package: scanner
+      bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
+      version_override: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+      dependency_source: published
+
+  release-downloader:
+    name: release downloader
+    needs: [detect, release-core, wait-for-core-pypi, release-scanner]
+    if: |
+      always() &&
+      needs.detect.outputs.should_run == 'true' &&
+      needs.detect.outputs.downloader == 'true' &&
+      (needs.release-core.result == 'success' || needs.release-core.result == 'skipped') &&
+      (needs.wait-for-core-pypi.result == 'success' || needs.wait-for-core-pypi.result == 'skipped') &&
+      (needs.release-scanner.result == 'success' || needs.release-scanner.result == 'skipped')
+    uses: ./.github/workflows/release-package.yml
+    permissions:
+      contents: write
+      id-token: write
+    with:
+      package: downloader
+      bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
+      version_override: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+      dependency_source: published
