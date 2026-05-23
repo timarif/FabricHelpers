@@ -21,7 +21,7 @@ on:
         type: boolean
         default: false
       dependency_source_override:
-        description: "Override fabric-core source for builds (auto = use main.yml default)."
+        description: "Override fabric-core source for builds. auto = 'local' (default) until fabric-core is on PyPI."
         type: choice
         options: [auto, local, published]
         default: auto
@@ -174,7 +174,7 @@ jobs:
       package: scanner
       bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
       version_override: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
-      dependency_source: ${{ (github.event_name == 'workflow_dispatch' && inputs.dependency_source_override != 'auto') && inputs.dependency_source_override || 'published' }}
+      dependency_source: ${{ (github.event_name == 'workflow_dispatch' && inputs.dependency_source_override != 'auto') && inputs.dependency_source_override || 'local' }}
       skip_pypi: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_pypi || false }}
 
   release-downloader:
@@ -195,5 +195,5 @@ jobs:
       package: downloader
       bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
       version_override: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
-      dependency_source: ${{ (github.event_name == 'workflow_dispatch' && inputs.dependency_source_override != 'auto') && inputs.dependency_source_override || 'published' }}
+      dependency_source: ${{ (github.event_name == 'workflow_dispatch' && inputs.dependency_source_override != 'auto') && inputs.dependency_source_override || 'local' }}
       skip_pypi: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_pypi || false }}
