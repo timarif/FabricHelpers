@@ -191,8 +191,11 @@ def write_file_version(package: str, version: str) -> None:
     path = get_config(package).version_file
     text = path.read_text(encoding="utf-8")
     new_text, count = VERSION_ASSIGN_RE.subn(rf"\g<1>{version}\g<3>", text, count=1)
-    if count != 1 or new_text == text:
+    if count != 1:
         raise SystemExit(f"could not replace __version__ in {path}")
+    if new_text == text:
+        print(f"No version change needed for {path.relative_to(REPO_ROOT)} (already {version})")
+        return
     path.write_text(new_text, encoding="utf-8")
     print(f"Wrote {path.relative_to(REPO_ROOT)} = {version}")
 
