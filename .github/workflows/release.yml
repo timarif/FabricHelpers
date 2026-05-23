@@ -12,6 +12,15 @@ on:
         description: "Existing package tag to (re-)build and release (e.g. scanner-v0.3.5)."
         required: true
         type: string
+      skip_pypi:
+        description: "Skip the PyPI upload step (still publishes the GitHub Release)."
+        type: boolean
+        default: false
+      dependency_source:
+        description: "Source of fabric-core when building scanner/downloader."
+        type: choice
+        options: [published, local]
+        default: published
 
 permissions:
   contents: read
@@ -27,4 +36,5 @@ jobs:
       package: ${{ inputs.package }}
       skip_bump: true
       tag: ${{ inputs.tag }}
-      dependency_source: published
+      dependency_source: ${{ inputs.dependency_source }}
+      skip_pypi: ${{ inputs.skip_pypi }}

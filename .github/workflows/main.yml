@@ -16,6 +16,15 @@ on:
       version:
         type: string
         default: ""
+      skip_pypi:
+        description: "Skip the PyPI upload step (still publishes GitHub Release)."
+        type: boolean
+        default: false
+      dependency_source_override:
+        description: "Override fabric-core source for builds (auto = use main.yml default)."
+        type: choice
+        options: [auto, local, published]
+        default: auto
 
 permissions:
   contents: read
@@ -123,11 +132,12 @@ jobs:
       bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
       version_override: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
       dependency_source: local
+      skip_pypi: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_pypi || false }}
 
   wait-for-core-pypi:
     name: wait for fabric-core on PyPI
     needs: release-core
-    if: always() && needs.release-core.result == 'success'
+    if: always() && needs.release-core.result == 'success' && !(github.event_name == 'workflow_dispatch' && inputs.skip_pypi)
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -164,7 +174,8 @@ jobs:
       package: scanner
       bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
       version_override: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
-      dependency_source: published
+      dependency_source: ${{ (github.event_name == 'workflow_dispatch' && inputs.dependency_source_override != 'auto') && inputs.dependency_source_override || 'published' }}
+      skip_pypi: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_pypi || false }}
 
   release-downloader:
     name: release downloader
@@ -184,4 +195,5 @@ jobs:
       package: downloader
       bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
       version_override: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
-      dependency_source: published
+      dependency_source: ${{ (github.event_name == 'workflow_dispatch' && inputs.dependency_source_override != 'auto') && inputs.dependency_source_override || 'published' }}
+      skip_pypi: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_pypi || false }}

@@ -32,6 +32,11 @@ on:
         required: false
         type: string
         default: local
+      skip_pypi:
+        description: "Skip the PyPI upload step (still publishes the GitHub Release)."
+        required: false
+        type: boolean
+        default: false
     outputs:
       tag:
         description: "Released tag."
@@ -263,6 +268,7 @@ jobs:
           files: downloaded-dist/*
 
       - name: Publish to PyPI
+        if: ${{ !inputs.skip_pypi }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: downloaded-dist/
