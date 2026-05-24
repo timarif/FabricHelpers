@@ -145,13 +145,17 @@ def _ctx_fn_for_rows(resolved: ResolvedPaths,
     src_ws_name  = resolved.source_workspace_name or src_ws_id or ""
 
     def _ctx(row) -> dict:
+        # `pyspark.sql.Row.__getitem__(str)` raises `ValueError`
+        # (`PySparkValueError`) when the column is missing — internally
+        # it does `self.__fields__.index(key)`. So we also catch
+        # ValueError; the getattr fallback then runs cleanly.
         try:
             wid = row["workspace_id"] or src_ws_id
-        except (TypeError, KeyError, IndexError):
+        except (TypeError, KeyError, IndexError, ValueError):
             wid = getattr(row, "workspace_id", "") or src_ws_id
         try:
             dated = row["source_dated_partition"]
-        except (TypeError, KeyError, IndexError):
+        except (TypeError, KeyError, IndexError, ValueError):
             dated = getattr(row, "source_dated_partition", None)
         wname = ws_name_by_id.get((wid or "").lower(), wid) or src_ws_name
         return {

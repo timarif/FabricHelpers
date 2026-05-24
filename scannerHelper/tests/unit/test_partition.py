@@ -334,3 +334,35 @@ def test_extract_workspace_from_path_helper():
     # Empty / None
     assert extract_workspace_from_path("") == (None, None)
     assert extract_workspace_from_path(None) == (None, None)  # type: ignore[arg-type]
+
+
+# --- _row_field defensive lookup (regression test) ------------------------
+
+class _FakeRow:
+    """Mimics `pyspark.sql.Row.__getitem__` semantics: a missing str key
+    raises `ValueError` (Row internally calls `__fields__.index(key)`,
+    which is `list.index`'s native exception)."""
+
+    def __init__(self, **fields):
+        self._fields = fields
+
+    def __getitem__(self, key):
+        try:
+            return self._fields[key]
+        except KeyError:
+            raise ValueError(f"{key!r} is not in list")
+
+    def __getattr__(self, name):
+        try:
+            return self._fields[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+
+def test_row_field_returns_default_when_missing_via_valueerror():
+    """Regression: PySpark Row raises ValueError on missing field; `_row_field`
+    must absorb that and return the supplied default."""
+    from fabric_scanner.spark.partition import _row_field
+    row = _FakeRow(path="/x/y.ipynb", content=b"...")
+    assert _row_field(row, "workspace_id", "DEFAULT") == "DEFAULT"
+    assert _row_field(row, "missing", None) is None
