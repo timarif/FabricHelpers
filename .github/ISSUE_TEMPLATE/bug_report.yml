@@ -1,0 +1,68 @@
+name: 🐛 Bug report
+description: Report a defect in one of the helpers.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: helper
+    attributes:
+      label: Which helper is affected?
+      options:
+        - coreHelper
+        - scannerHelper
+        - downloaderHelper
+        - mpeHelper
+        - Repository-wide / tooling
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Released version (e.g. `fabric-scanner 0.3.1`) or commit SHA.
+      placeholder: "e.g. v0.3.1 or 1a2b3c4"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug, including the full error message / stack trace if any.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Fabric capacity / runtime, Python version, OS, auth mode (SPN, az CLI, notebookutils), etc.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Logs, screenshots, related issues/PRs.
+    validations:
+      required: false
