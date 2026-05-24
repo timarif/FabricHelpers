@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 Repository README
+    url: https://github.com/timarif/FabricHelpers#readme
+    about: Browse the helpers and their per-folder READMEs before opening an issue.
+  - name: 🤝 Contributing guide
+    url: https://github.com/timarif/FabricHelpers/blob/main/CONTRIBUTING.md
+    about: How the helpers are structured and how to propose changes.
