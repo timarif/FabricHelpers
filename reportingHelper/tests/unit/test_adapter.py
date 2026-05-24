@@ -61,6 +61,12 @@ def test_empty_path_raises():
         ReportingAdapter(spark, "")
 
 
+def test_backtick_in_path_raises():
+    spark = _make_spark()
+    with pytest.raises(ValueError, match="backtick"):
+        ReportingAdapter(spark, "/tmp/evil`injection")
+
+
 def test_trailing_slash_stripped():
     adapter, _ = _make_adapter("/tmp/lh/")
     assert adapter._path == "/tmp/lh"

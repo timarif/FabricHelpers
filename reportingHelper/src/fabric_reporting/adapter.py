@@ -139,6 +139,13 @@ class ReportingAdapter:
     def __init__(self, spark: Any, lakehouse_path: str) -> None:
         if not lakehouse_path:
             raise ValueError("lakehouse_path must not be empty")
+        # Reject backtick characters — they are used as identifiers in the
+        # MERGE SQL statement and cannot be safely escaped.
+        if "`" in lakehouse_path:
+            raise ValueError(
+                "lakehouse_path must not contain backtick characters ('`'); "
+                f"got: {lakehouse_path!r}"
+            )
         self._spark = spark
         self._path = lakehouse_path.rstrip("/")
 

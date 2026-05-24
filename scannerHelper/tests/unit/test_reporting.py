@@ -102,7 +102,7 @@ def test_write_scan_findings_raises_when_reporting_not_installed():
 
     # Force the import of fabric_reporting.adapter to fail by setting the
     # module entry to None in sys.modules (Python's "blocked import" sentinel).
-    blocked = {"fabric_reporting": None, "fabric_reporting.adapter": None}
+    blocked = {"fabric_reporting.adapter": None}
     with patch.dict(sys.modules, blocked):
         with pytest.raises(RuntimeError, match="reporting_lakehouse is set but"):
             write_scan_findings(cfg, spark, findings_df, "run-001")
