@@ -37,7 +37,7 @@ from fabric_downloader.item_types import REGISTRY
 class TestResolveItemTypes:
     def test_all_returns_registered_types(self):
         types = resolve_item_types("all", "")
-        assert len(types) >= 9  # at least the 10 built-in handlers
+        assert len(types) >= 10  # at least the 10 built-in handlers
         assert "Notebook" in types
 
     def test_explicit_list(self):

@@ -133,9 +133,9 @@ def generic_parts_to_files(body: dict) -> dict[str, bytes]:
     """Default implementation of ``to_files`` for any parts-based handler.
 
     Decodes every non-empty part from ``definition.parts`` and returns a
-    mapping of ``{<safe_path>.bin -> raw_bytes}`` plus a ``<safe_path>.txt``
-    entry when the payload is valid UTF-8.  This is the fallback used by
-    every handler that does not need special treatment.
+    mapping of ``{part_path: raw_bytes}`` where the key is the original
+    ``path`` value from the Fabric API response.  This is the fallback used
+    by every handler that does not need special treatment.
     """
     out: dict[str, bytes] = {}
     for part in _parts_from_body(body):
