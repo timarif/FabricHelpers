@@ -37,15 +37,19 @@ DEFAULT_FORMAT_BY_TYPE: Mapping[str, str] = {}
 
 # Valid values for `DownloaderConfig.notebook_format`. The Fabric
 # `getDefinition` endpoint advertises `ipynb` and `fabricGitSource`; we map
-# those (plus a raw "parts" pass-through) onto user-facing names:
+# those (plus a raw "parts" pass-through and a single-file "txt") onto
+# user-facing names:
 #   - "py"    : native source mode (no `?format=` hint; API returns
 #               `notebook-content.<lang>` + `.platform`). We extract the
 #               source part and save it as a single file with the
 #               language-specific extension (`.py`, `.scala`, `.sql`, `.r`).
+#   - "txt"   : same fetch as "py" but the source is saved as a single
+#               `.txt` file regardless of language. Useful for systems
+#               that index notebooks as plain text.
 #   - "ipynb" : sends `?format=ipynb`; saves the single `.ipynb` part.
 #   - "parts" : no `?format=` hint; writes every part as a separate `.txt`
 #               file (same shape as non-notebook item types).
-NOTEBOOK_FORMATS: tuple[str, ...] = ("py", "ipynb", "parts")
+NOTEBOOK_FORMATS: tuple[str, ...] = ("py", "txt", "ipynb", "parts")
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,9 @@ class DownloaderConfig:
       language (``.py`` for PySpark/Python, ``.scala`` / ``.sql`` / ``.r``
       for non-Python). Calls the API without a `?format=` hint (Fabric
       defaults to ``fabricGitSource``).
+    - ``"txt"``: same fetch as ``"py"`` but the source is written as a
+      single ``<name>__<id>.txt`` regardless of language. Handy when a
+      downstream system expects plain-text files.
     - ``"ipynb"``: save as a single self-contained ``<name>__<id>.ipynb``
       Jupyter file. Calls the API with ``?format=ipynb``.
     - ``"parts"``: write every part of the definition envelope as a
@@ -210,9 +217,9 @@ class DownloaderConfig:
         override is configured (defaults to parts mode).
 
         Notebook items consult ``notebook_format``: only ``"ipynb"`` mode
-        sends a hint (`?format=ipynb`). Both ``"py"`` and ``"parts"`` modes
-        omit the hint so the API returns the native source + `.platform`
-        parts (Fabric's `fabricGitSource` default)."""
+        sends a hint (`?format=ipynb`). All other modes (`"py"`, `"txt"`,
+        `"parts"`) omit the hint so the API returns the native source +
+        `.platform` parts (Fabric's `fabricGitSource` default)."""
         if item_type == "Notebook":
             return "ipynb" if self.notebook_format == "ipynb" else None
         return self.format_by_type.get(item_type) if self.format_by_type else None

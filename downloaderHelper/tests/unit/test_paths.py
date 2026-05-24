@@ -113,6 +113,16 @@ def test_build_paths_py_mode_uses_py_placeholder():
     assert primary == "backups/run-1/ws__ws/Notebook/My_NB__nb.py"
 
 
+def test_build_paths_txt_mode_uses_txt_extension():
+    primary, _ = build_paths(
+        output_root="backups", run_label="run-1",
+        workspace_id="ws", workspace_name="ws",
+        item_type="Notebook", item_id="nb", item_name="My NB",
+        export_mode="txt",
+    )
+    assert primary == "backups/run-1/ws__ws/Notebook/My_NB__nb.txt"
+
+
 def test_build_paths_parts_mode_placeholder():
     primary, _ = build_paths(
         output_root="backups", run_label="run-1",

@@ -37,7 +37,7 @@ def test_default_format_by_type_is_empty():
 
 
 def test_notebook_formats_constant_lists_supported_values():
-    assert NOTEBOOK_FORMATS == ("py", "ipynb", "parts")
+    assert NOTEBOOK_FORMATS == ("py", "txt", "ipynb", "parts")
 
 
 # -------------------- validation --------------------
@@ -127,6 +127,14 @@ def test_notebook_format_parts_writes_every_part():
     cfg = DownloaderConfig(notebook_format="parts")
     assert cfg.format_for("Notebook") is None
     assert cfg.export_mode_for("Notebook") == "parts"
+
+
+def test_notebook_format_txt_sends_no_format_hint():
+    """`txt` mode reuses the `fabricGitSource` fetch (no `?format=` hint)
+    but flattens the saved file to `.txt` on the writer side."""
+    cfg = DownloaderConfig(notebook_format="txt")
+    assert cfg.format_for("Notebook") is None
+    assert cfg.export_mode_for("Notebook") == "txt"
 
 
 def test_export_mode_for_non_notebook_with_ipynb_override():

@@ -555,3 +555,96 @@ def test_py_mode_empty_payload_is_error():
     assert row["status"] == "error"
     assert "empty payload" in row["error"]
     assert writes == []
+
+
+# -------------------- txt mode --------------------
+
+
+def test_txt_mode_flattens_python_source_to_txt():
+    """`txt` mode pulls the same `notebook-content.py` part as `py` mode
+    but always writes a `.txt` file (no language-specific extension)."""
+    ctx = _make_ctx(notebook_format="txt")
+    writer, writes = _writer()
+    src = "# Fabric notebook source\nprint('hi')\n"
+    body = {"definition": {"parts": [
+        {"path": "notebook-content.py", "payload": _b64(src),
+         "payloadType": "InlineBase64"},
+        {"path": ".platform", "payload": _b64("{}"),
+         "payloadType": "InlineBase64"},
+    ]}}
+    row = process_definition_body(
+        ctx=ctx, workspace_id="ws-1", workspace_name="My WS",
+        item_type="Notebook", item_id="nb-1", display_name="Cool NB",
+        body=body, http_status=200, attempts=1, token_refreshes=0,
+        error=None, writer=writer, exists=_exists_factory(),
+    )
+    assert row["status"] == "ok"
+    assert row["parts_saved"] == 1
+    assert row["export_format"] == "txt"
+    assert row["payload_bytes"] == len(src)
+    assert row["rel_path"].endswith("Cool_NB__nb-1.txt")
+    assert len(writes) == 1
+    uri, text = writes[0]
+    assert uri.endswith("Cool_NB__nb-1.txt")
+    assert text == src
+
+
+def test_txt_mode_flattens_scala_source_to_txt():
+    """Non-Python notebooks also collapse to `.txt` — the actual
+    notebook language doesn't leak into the filename."""
+    ctx = _make_ctx(notebook_format="txt")
+    writer, writes = _writer()
+    src = "// scala\nprintln(\"hi\")\n"
+    body = {"definition": {"parts": [
+        {"path": "notebook-content.scala", "payload": _b64(src),
+         "payloadType": "InlineBase64"},
+    ]}}
+    row = process_definition_body(
+        ctx=ctx, workspace_id="ws-1", workspace_name="ws",
+        item_type="Notebook", item_id="nb-2", display_name="ScalaNB",
+        body=body, http_status=200, attempts=1, token_refreshes=0,
+        error=None, writer=writer, exists=_exists_factory(),
+    )
+    assert row["status"] == "ok"
+    assert row["rel_path"].endswith("ScalaNB__nb-2.txt")
+    assert writes[0][0].endswith("ScalaNB__nb-2.txt")
+    assert writes[0][1] == src
+
+
+def test_txt_mode_missing_source_part_is_error():
+    ctx = _make_ctx(notebook_format="txt")
+    writer, writes = _writer()
+    body = {"definition": {"parts": [
+        {"path": ".platform", "payload": _b64("{}"),
+         "payloadType": "InlineBase64"},
+    ]}}
+    row = process_definition_body(
+        ctx=ctx, workspace_id="ws-1", workspace_name="ws",
+        item_type="Notebook", item_id="nb-1", display_name="N",
+        body=body, http_status=200, attempts=1, token_refreshes=0,
+        error=None, writer=writer, exists=_exists_factory(),
+    )
+    assert row["status"] == "error"
+    assert "notebook-content" in row["error"]
+    assert writes == []
+
+
+def test_txt_mode_skip_existing():
+    ctx = _make_ctx(notebook_format="txt", skip_existing=True)
+    writer, writes = _writer()
+    body = {"definition": {"parts": [
+        {"path": "notebook-content.py", "payload": _b64("print('x')"),
+         "payloadType": "InlineBase64"},
+    ]}}
+    target = ctx.join_target(
+        "backups/run-T/ws__ws-1/Notebook/N__nb-1.txt")
+    exists = _exists_factory({target})
+    row = process_definition_body(
+        ctx=ctx, workspace_id="ws-1", workspace_name="ws",
+        item_type="Notebook", item_id="nb-1", display_name="N",
+        body=body, http_status=200, attempts=1, token_refreshes=0,
+        error=None, writer=writer, exists=exists,
+    )
+    assert row["status"] == "skipped_exists"
+    assert row["parts_saved"] == 0
+    assert writes == []

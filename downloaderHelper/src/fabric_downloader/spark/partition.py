@@ -262,11 +262,12 @@ def process_definition_body(
             _write(primary_target, ipynb_text)
             parts_saved = 1
 
-        elif export_mode == "py":
+        elif export_mode in ("py", "txt"):
             # Single-file native-source mode. The API returns the source
             # under `notebook-content.<lang>` plus `.platform`; we save
-            # only the source, with the extension that matches the
-            # notebook's actual language (`.py`, `.scala`, `.sql`, `.r`).
+            # only the source. In "py" mode the extension matches the
+            # notebook's actual language (`.py`, `.scala`, `.sql`, `.r`);
+            # in "txt" mode the source is always saved as `.txt`.
             src_part, ext, all_matches = _find_notebook_source_part(parts)
             if src_part is None:
                 return _row_dict(
@@ -293,8 +294,10 @@ def process_definition_body(
             decoded = base64.b64decode(payload)
             src_text = decoded.decode("utf-8", errors="replace")
             payload_bytes = len(decoded)
-            # Refine the manifest's primary path with the real extension.
-            final_primary_rel = f"{folder}/{fname_prefix}.{ext}"
+            # In "py" mode honor the source language; in "txt" mode flatten
+            # everything to `.txt`.
+            file_ext = ext if export_mode == "py" else "txt"
+            final_primary_rel = f"{folder}/{fname_prefix}.{file_ext}"
             final_primary_target = ctx.join_target(final_primary_rel)
             base_kwargs["rel_path"] = final_primary_rel
             base_kwargs["primary_target"] = final_primary_target

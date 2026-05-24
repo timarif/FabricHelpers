@@ -1,0 +1,15 @@
+feat(downloader): add 'txt' notebook format mode
+
+Adds a fourth `notebook_format` value: `"txt"`. Same fetch as `"py"`
+(no `?format=` hint, extracts the `notebook-content.<lang>` part) but
+the source is always written as a single `.txt` file regardless of the
+notebook's actual language. Useful for downstream systems that index
+notebooks as plain text.
+
+Also ignores `.pr_body.md` left over by failed `gh pr create` attempts.
+
+Adds 6 new unit tests (113 total, all passing) covering the txt-mode
+happy path for Python + Scala sources, missing source part, skip_existing,
+and the new build_paths placeholder.
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

@@ -87,7 +87,7 @@ parts array. Three knobs drive what gets pulled and how:
 | knob | effect |
 |---|---|
 | `item_types` (tuple) | which types are enumerated + downloaded |
-| `notebook_format` (str) | how Notebooks are saved — `"py"` (default), `"ipynb"`, or `"parts"` |
+| `notebook_format` (str) | how Notebooks are saved — `"py"` (default), `"txt"`, `"ipynb"`, or `"parts"` |
 | `format_by_type` (dict) | per-type `?format=` override for **non-Notebook** types; missing key = parts mode |
 
 Defaults:
@@ -107,6 +107,9 @@ Defaults:
   with the matching extension. **Note**: non-Python notebooks end up with
   `.scala`, `.sql`, or `.r` extensions — `"py"` is the user-facing name
   but the writer respects the notebook's actual language.
+- **`"txt"`** — same fetch as `"py"`, but the source is always written as
+  a single `<name>__<id>.txt` regardless of language. Handy for indexing
+  pipelines that only consume plain text.
 - **`"ipynb"`** — sends `?format=ipynb` and saves one self-contained
   `<name>__<id>.ipynb` per notebook (the previous default).
 - **`"parts"`** — no `?format=` hint; writes every part of the definition
