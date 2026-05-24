@@ -108,7 +108,7 @@ jobs:
           rm -rf .venv-smoke
           python -m venv .venv-smoke
           ./.venv-smoke/bin/pip install --quiet dist/fabric_core-*.whl
-          ./.venv-smoke/bin/python -c "from fabric_core import auth, paths, enumerate, diagnostics, build_notebook; print('core smoke ok')"
+          ./.venv-smoke/bin/python -c "from fabric_core import auth, paths, enumerate, diagnostics, build_notebook, http; print('core smoke ok')"
 
       - name: Smoke-test fabric-scanner wheel
         if: inputs.package == 'scanner'

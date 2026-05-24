@@ -180,3 +180,27 @@ def test_fs_ls_raises_import_error_when_runtime_missing(monkeypatch):
 
     with pytest.raises(ImportError, match="notebookutils / mssparkutils"):
         fs_ls("abfss://ws/lh/Files")
+
+
+# ---- mounted_files_path ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "subpath,expected",
+    [
+        ("", "/lakehouse/default/Files"),
+        ("mpe_manager", "/lakehouse/default/Files/mpe_manager"),
+        ("/mpe_manager", "/lakehouse/default/Files/mpe_manager"),
+        ("mpe_manager/2025-01-01", "/lakehouse/default/Files/mpe_manager/2025-01-01"),
+    ],
+)
+def test_mounted_files_path_handles_subpaths(subpath, expected):
+    from fabric_core.paths import mounted_files_path
+
+    assert mounted_files_path(subpath) == expected
+
+
+def test_mounted_files_path_default_returns_root():
+    from fabric_core.paths import mounted_files_path
+
+    assert mounted_files_path() == "/lakehouse/default/Files"

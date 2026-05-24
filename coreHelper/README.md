@@ -24,8 +24,9 @@ pytest tests/unit/
 
 | Module | What it owns |
 |---|---|
-| `fabric_core.auth` | `TokenError`, `get_token(audience, *, force_refresh=False)`, `_from_notebookutils`, `_from_mssparkutils`, `_from_env`, `_from_azure_cli`, `_from_default_credential`. Five-source chain. Callers **must supply `audience` explicitly** — no default. |
-| `fabric_core.paths` | `ONELAKE_HOST`, `table_path`, `files_path`, `files_uri`, `fs_ls`, `_import_nbu`, `detect_notebook_runtime`. Pure path math + `notebookutils` shim. |
+| `fabric_core.auth` | `TokenError`, `get_token(audience, *, runtime_token_provider=None)`, `fetch_token_via_client_credentials(...)`, `_from_notebookutils`, `_from_mssparkutils`, `_from_env`, `_from_spn_env`, `_from_azure_cli`, `_from_default_credential`. Six-source chain (adds an SPN client-credentials source between env vars and Azure CLI). Callers **must supply `audience` explicitly** — no default. |
+| `fabric_core.http` | `request_json(method, url, *, token=None, body=None, ...)`, `paged_get(...)`, `collect_paged(...)`. Synchronous urllib client with 429/5xx retry + backoff; walks `continuationToken` / `continuationUri` / `nextLink` pagination. No `requests` / `aiohttp` dependency. |
+| `fabric_core.paths` | `ONELAKE_HOST`, `table_path`, `files_path`, `files_uri`, `mounted_files_path`, `fs_ls`, `_import_nbu`, `detect_notebook_runtime`. Pure path math + `notebookutils` shim. |
 | `fabric_core.enumerate` | `enumerate_workspaces_items(*, token, pbi_base, fabric_base, timeout, workspace_concurrency, item_filter=None, log=None)`, `run_enumeration_sync(**kw)`, plus module-private `_http_json` and `_list_*_workspaces` helpers. |
 | `fabric_core.diagnostics` | `ProbeResult` dataclass, `probe_api(*, token, pbi_base, fabric_base, timeout=30.0) -> list[ProbeResult]`. Synchronous four-endpoint probe. |
 | `fabric_core.build_notebook` | `NotebookBuildSpec` dataclass, `write_notebook(spec) -> Path`, `_md`, `_code`, `_slug`, `_load_version`. Library-form of the per-package `scripts/build_notebook.py`. |

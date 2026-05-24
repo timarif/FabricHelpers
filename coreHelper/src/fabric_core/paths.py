@@ -40,6 +40,19 @@ def files_uri(workspace_id: str, lakehouse_id: str, subpath: str = "Files") -> s
     return files_path(workspace_id, lakehouse_id, subpath)
 
 
+def mounted_files_path(subpath: str = "") -> str:
+    """Build a POSIX path to the attached lakehouse's ``Files`` mount.
+
+    Fabric notebooks expose the default lakehouse at
+    ``/lakehouse/default/Files``. This helper keeps every caller using the
+    same path math so subpath quirks (leading slashes, empty input) are
+    handled identically.
+    """
+    base = "/lakehouse/default/Files"
+    sub = (subpath or "").lstrip("/")
+    return f"{base}/{sub}" if sub else base
+
+
 def _import_nbu():
     """Lazy import of notebookutils with mssparkutils fallback.
 
