@@ -151,6 +151,40 @@ saved items back into Fabric.
 
 ---
 
+### ✂️ [`splitterHelper/`](./splitterHelper) — Fabric Workspace Splitter
+
+An installable wheel (`fabric-splitter`) with a `fabric-splitter` CLI that
+**splits a mixed-purpose Fabric workspace into two target workspaces along
+item-type lines** — fully auditable, idempotent, with dry-run by default:
+
+```pwsh
+# Dry-run (no changes)
+fabric-splitter \
+    --source  <workspace-id> \
+    --workspace-a-name "Engineering" \
+    --workspace-b-name "Consumption" \
+    --types-to-a notebook,lakehouse,datapipeline
+
+# Apply the split
+fabric-splitter ... --apply
+```
+
+- **Classify** every item in the source workspace: types in `--types-to-a`
+  → workspace A; everything else → workspace B.
+- **Dry-run report** (`splitter_report.csv` + `.json`) showing each item's
+  proposed target and action (`move` / `leave`).
+- **Apply mode** — creates the two target workspaces (if missing), copies role
+  assignments, moves every item, then runs a reference-rewrite pass so semantic
+  models, reports, and pipelines still point at the correct workspace.
+- **Idempotent** — a second run with the same inputs produces zero API mutations.
+- **Audit log** — every API mutation appended to
+  `splitter_audit_<timestamp>.jsonl`.
+
+See [`splitterHelper/README.md`](./splitterHelper/README.md) for the full
+CLI reference, a worked example, and the rewrite-vs-manual matrix.
+
+---
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the dependency-direction
