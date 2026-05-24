@@ -30,6 +30,7 @@ class DownloadContext:
 
     # --- Per-type format hints -------------------------------------------
     format_by_type: Mapping[str, str] = field(default_factory=dict)
+    notebook_format: str = "py"
 
     # --- Fabric REST -----------------------------------------------------
     fabric_base:          str = "https://api.fabric.microsoft.com"
@@ -39,10 +40,17 @@ class DownloadContext:
     max_retries:          int = 4
 
     def format_for(self, item_type: str) -> str | None:
+        """Mirror of `DownloaderConfig.format_for` — kept in sync so the
+        executor doesn't need a back-reference to the driver-side config."""
+        if item_type == "Notebook":
+            return "ipynb" if self.notebook_format == "ipynb" else None
         return self.format_by_type.get(item_type)
 
     def export_mode_for(self, item_type: str) -> str:
-        return ("ipynb" if self.format_for(item_type) == "ipynb"
+        """Mirror of `DownloaderConfig.export_mode_for`."""
+        if item_type == "Notebook":
+            return self.notebook_format
+        return ("ipynb" if self.format_by_type.get(item_type) == "ipynb"
                 else "parts")
 
     def join_target(self, rel_path: str) -> str:
@@ -70,6 +78,7 @@ def build_download_context(
         include_raw_definition=config.include_raw_definition,
         skip_existing=config.skip_existing,
         format_by_type=dict(config.format_by_type),
+        notebook_format=config.notebook_format,
         fabric_base=config.fabric_base,
         token_audience=config.token_audience,
         fallback_token=fallback_token,

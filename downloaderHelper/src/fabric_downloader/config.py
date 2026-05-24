@@ -27,12 +27,25 @@ KNOWN_ITEM_TYPES: tuple[str, ...] = (
 )
 
 
-# Per-type format hints. When a type appears as a key, its value is passed as
-# the `?format=` query string to `getDefinition`. When missing, the call uses
-# the default (no format) which returns every part separately ("parts" mode).
-DEFAULT_FORMAT_BY_TYPE: Mapping[str, str] = {
-    "Notebook": "ipynb",   # one self-contained .ipynb file per notebook
-}
+# Per-type format hints for **non-Notebook** types. When a type appears as a
+# key, its value is passed as the `?format=` query string to `getDefinition`.
+# When missing, the call uses the default (no format) which returns every
+# part separately ("parts" mode). Notebook downloads are controlled by the
+# dedicated `notebook_format` knob — passing `"Notebook"` here raises.
+DEFAULT_FORMAT_BY_TYPE: Mapping[str, str] = {}
+
+
+# Valid values for `DownloaderConfig.notebook_format`. The Fabric
+# `getDefinition` endpoint advertises `ipynb` and `fabricGitSource`; we map
+# those (plus a raw "parts" pass-through) onto user-facing names:
+#   - "py"    : native source mode (no `?format=` hint; API returns
+#               `notebook-content.<lang>` + `.platform`). We extract the
+#               source part and save it as a single file with the
+#               language-specific extension (`.py`, `.scala`, `.sql`, `.r`).
+#   - "ipynb" : sends `?format=ipynb`; saves the single `.ipynb` part.
+#   - "parts" : no `?format=` hint; writes every part as a separate `.txt`
+#               file (same shape as non-notebook item types).
+NOTEBOOK_FORMATS: tuple[str, ...] = ("py", "ipynb", "parts")
 
 
 @dataclass(frozen=True)
@@ -45,8 +58,27 @@ class DownloaderConfig:
 
     format_by_type: Mapping[str, str] = field(
         default_factory=lambda: dict(DEFAULT_FORMAT_BY_TYPE))
-    """Per-type `?format=` overrides. Missing keys -> no format param (the
-    API returns every definition part separately = "parts" mode)."""
+    """Per-type `?format=` overrides for **non-Notebook** types. Missing keys
+    -> no format param (the API returns every definition part separately =
+    "parts" mode). The legacy `"Notebook"` key is rejected at validation
+    time — use `notebook_format` instead."""
+
+    notebook_format: str = "py"
+    """How to download Fabric Notebook items. One of:
+
+    - ``"py"`` *(default)*: save the notebook's native source as a single
+      file ``<name>__<id>.<ext>`` where ``<ext>`` matches the notebook
+      language (``.py`` for PySpark/Python, ``.scala`` / ``.sql`` / ``.r``
+      for non-Python). Calls the API without a `?format=` hint (Fabric
+      defaults to ``fabricGitSource``).
+    - ``"ipynb"``: save as a single self-contained ``<name>__<id>.ipynb``
+      Jupyter file. Calls the API with ``?format=ipynb``.
+    - ``"parts"``: write every part of the definition envelope as a
+      separate ``.txt`` file (same shape as non-notebook types). Calls the
+      API without a `?format=` hint.
+
+    Non-notebook item types are unaffected by this setting; use
+    `format_by_type` for per-type `?format=` overrides on those."""
 
     # --- Enumeration --------------------------------------------------------
     admin_mode: bool = True
@@ -132,6 +164,17 @@ class DownloaderConfig:
             raise ValueError(
                 "write_to_default_lakehouse=False requires both "
                 "write_workspace_id and write_lakehouse_id")
+        if self.notebook_format not in NOTEBOOK_FORMATS:
+            raise ValueError(
+                f"notebook_format must be one of {NOTEBOOK_FORMATS!r}; "
+                f"got {self.notebook_format!r}")
+        if "Notebook" in dict(self.format_by_type or {}):
+            raise ValueError(
+                "format_by_type['Notebook'] is no longer supported. "
+                "Use notebook_format='py' | 'ipynb' | 'parts' instead. "
+                "(Previous default 'ipynb' is now notebook_format='ipynb'; "
+                "the new default 'py' downloads notebooks as native "
+                "source files.)")
 
     # ----------------------------------------------------------------------
     @classmethod
@@ -164,9 +207,22 @@ class DownloaderConfig:
 
     def format_for(self, item_type: str) -> str | None:
         """Return the `?format=` value for `item_type`, or None when no
-        override is configured (defaults to parts mode)."""
+        override is configured (defaults to parts mode).
+
+        Notebook items consult ``notebook_format``: only ``"ipynb"`` mode
+        sends a hint (`?format=ipynb`). Both ``"py"`` and ``"parts"`` modes
+        omit the hint so the API returns the native source + `.platform`
+        parts (Fabric's `fabricGitSource` default)."""
+        if item_type == "Notebook":
+            return "ipynb" if self.notebook_format == "ipynb" else None
         return self.format_by_type.get(item_type) if self.format_by_type else None
 
     def export_mode_for(self, item_type: str) -> str:
-        """`"ipynb"` when this type has a format override, else `"parts"`."""
-        return "ipynb" if self.format_for(item_type) == "ipynb" else "parts"
+        """Internal writer mode. For Notebook returns ``notebook_format``
+        directly (`"py"` | `"ipynb"` | `"parts"`). For other types,
+        ``"ipynb"`` when this type has an `?format=ipynb` override, else
+        ``"parts"``."""
+        if item_type == "Notebook":
+            return self.notebook_format
+        fmt = self.format_by_type.get(item_type) if self.format_by_type else None
+        return "ipynb" if fmt == "ipynb" else "parts"
