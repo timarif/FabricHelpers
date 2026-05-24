@@ -56,15 +56,48 @@ def build_inventory_lakehouse(
 
     src_lh_id   = resolved.source_lakehouse_id   or ""
     src_lh_name = resolved.source_lakehouse_name or src_lh_id or ""
+
+    scan_df = attach_inventory_columns(file_df, config, resolved)
+
+    snapshot = scan_df.select(
+        F.col("workspace_id"),
+        F.col("workspace_name"),
+        F.lit(src_lh_id).alias("source_lakehouse_id"),
+        F.lit(src_lh_name).alias("source_lakehouse_name"),
+        F.col("source_dated_partition"),
+        F.col("path").alias("notebook_id"),
+        F.regexp_extract(F.col("path"), "([^/]+)$", 1).alias("display_name"),
+    )
+
+    return scan_df, snapshot, n_total
+
+
+def attach_inventory_columns(file_df: Any, config: Any, resolved: Any) -> Any:
+    """Attach `workspace_id`, `workspace_name`, and `source_dated_partition`
+    columns to a `binaryFile`-reader-shaped DataFrame.
+
+    Used by `build_inventory_lakehouse` so that the returned `scan_df`
+    carries the per-row workspace context needed by downstream consumers
+    (e.g. the AI auditor's `mapPartitions` callback). Public for testing.
+
+    Priority for `workspace_id` / `source_dated_partition`:
+      1. `ws_dated_base` anchor — only fires when `source_layout='ws_dated'`
+         AND `resolved.source_uri` is set. Most specific.
+      2. Universal `<anywhere>/<guid>/<datestamp>/` regex — covers the
+         common `notebook_exports/<guid>/<date>/<file>` shape under any
+         layout.
+      3. Fallback to `resolved.source_workspace_id` / `source_workspace_name`
+         for `workspace_id` / `workspace_name`, and NULL for
+         `source_dated_partition`.
+
+    Returns a DataFrame with the original `file_df` columns plus
+    `workspace_id`, `workspace_name`, and `source_dated_partition`.
+    """
+    from pyspark.sql import functions as F
+
     src_ws_id   = resolved.source_workspace_id   or ""
     src_ws_name = resolved.source_workspace_name or src_ws_id or ""
 
-    # Try the more specific ws_dated_base anchor first (only when the
-    # caller actually opted into that layout). Then fall back to the
-    # universal '<anywhere>/<guid>/<datestamp>/' pattern so the
-    # workspace_id and source_dated_partition columns come out right
-    # for the common 'notebook_exports/<guid>/<date>/<file>' shape
-    # even under the default flat layout.
     if config.source_layout == "ws_dated" and resolved.source_uri:
         base = (resolved.source_uri or "").rstrip("/")
         base_pat = re.escape(base) + r"/([^/]+)/([^/]+)/"
@@ -84,9 +117,6 @@ def build_inventory_lakehouse(
                        .otherwise(F.when(uni_dt != "", uni_dt)
                                   .otherwise(F.lit(""))))
 
-    # Final columns: extracted GUID when present, else fall back to
-    # the source lakehouse's workspace. workspace_name mirrors the GUID
-    # (since lakehouse mode has no friendly-name lookup).
     ws_id_col   = F.when(extracted_ws_id != "", extracted_ws_id) \
                    .otherwise(F.lit(src_ws_id))
     ws_name_col = F.when(extracted_ws_id != "", extracted_ws_id) \
@@ -94,17 +124,10 @@ def build_inventory_lakehouse(
     dt_col      = F.when(extracted_ws_dt != "", extracted_ws_dt) \
                    .otherwise(F.lit(None).cast("string"))
 
-    snapshot = file_df.select(
-        ws_id_col.alias("workspace_id"),
-        ws_name_col.alias("workspace_name"),
-        F.lit(src_lh_id).alias("source_lakehouse_id"),
-        F.lit(src_lh_name).alias("source_lakehouse_name"),
-        dt_col.alias("source_dated_partition"),
-        F.col("path").alias("notebook_id"),
-        F.regexp_extract(F.col("path"), "([^/]+)$", 1).alias("display_name"),
-    )
-
-    return file_df, snapshot, n_total
+    return (file_df
+            .withColumn("workspace_id",           ws_id_col)
+            .withColumn("workspace_name",         ws_name_col)
+            .withColumn("source_dated_partition", dt_col))
 
 
 def build_inventory_api(

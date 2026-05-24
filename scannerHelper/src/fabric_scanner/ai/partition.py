@@ -26,10 +26,16 @@ from .schema import AI_CHUNK_PRE_AI_COLUMNS
 
 def _row_field(row: Any, name: str, default: Any = None) -> Any:
     """Tolerant getter — works for pyspark.sql.Row, dict, and
-    SimpleNamespace test doubles."""
+    SimpleNamespace test doubles.
+
+    Note: `pyspark.sql.Row.__getitem__(str_key)` raises `ValueError`
+    (`PySparkValueError`) when the field is missing — internally it
+    calls `self.__fields__.index(key)`. So we have to catch
+    `ValueError` too, otherwise a missing column leaks past this guard.
+    """
     try:
         return row[name]
-    except (TypeError, KeyError, IndexError):
+    except (TypeError, KeyError, IndexError, ValueError):
         pass
     return getattr(row, name, default)
 
