@@ -9,3 +9,4 @@ htmlcov/
 .venv/
 .venv-*/
 .pr_body.md
+*.tmp
