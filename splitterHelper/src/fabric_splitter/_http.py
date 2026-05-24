@@ -78,9 +78,9 @@ def _request(
                 raise
             retry_after_hdr = exc.headers.get("Retry-After") if exc.headers else None
             try:
-                wait = float(retry_after_hdr) if retry_after_hdr else base_delay * (2**attempt)
+                wait = float(retry_after_hdr) if retry_after_hdr else base_delay * (2 ** (attempt - 1))
             except (TypeError, ValueError):
-                wait = base_delay * (2**attempt)
+                wait = base_delay * (2 ** (attempt - 1))
             time.sleep(min(wait, 60.0))
 
 

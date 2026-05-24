@@ -71,7 +71,7 @@ def _patch_part(part: dict, id_map: dict[str, str]) -> tuple[dict, bool]:
         return part, False
 
     new_payload = base64.b64encode(
-        json.dumps(new_content, indent=2).encode("utf-8")
+        json.dumps(new_content, separators=(",", ":")).encode("utf-8")
     ).decode()
     return {**part, "payload": new_payload}, True
 

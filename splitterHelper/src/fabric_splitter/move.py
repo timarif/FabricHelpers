@@ -36,7 +36,7 @@ NATIVE_MOVE_SUPPORTED: frozenset[str] = frozenset()
 def _audit(action: str, item: dict, target_workspace_id: str, audit_fh: IO[str]) -> None:
     """Append a JSON-lines record to *audit_fh*."""
     record = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "action": action,
         "itemId": item.get("id"),
         "itemType": item.get("type") or item.get("itemType"),
