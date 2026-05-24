@@ -1,5 +1,5 @@
-"""fabric_downloader — back up Fabric notebooks, pipelines, and dataflows
-from a tenant to a Lakehouse.
+"""fabric_downloader — back up Fabric notebooks, pipelines, dataflows, and
+more from a tenant to a Lakehouse.
 
 Public API (stable from v0.1):
 
@@ -15,6 +15,14 @@ Public API (stable from v0.1):
 The Spark + Fabric REST helpers are opt-in via the `[spark]` / `[api]`
 extras so the engine half of the package imports cleanly in any Python
 environment (laptops, CI, lightweight Fabric kernels).
+
+Item-type registry (v0.4+):
+
+    >>> from fabric_downloader.item_types import REGISTRY
+    >>> list(REGISTRY.keys())
+
+    Import ``fabric_downloader.handlers`` to auto-register all built-in
+    handlers; the CLI does this automatically.
 """
 from .config import DownloaderConfig
 from .paths import ResolvedPaths, resolve_paths, safe_segment

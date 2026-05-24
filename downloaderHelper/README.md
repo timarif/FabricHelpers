@@ -90,6 +90,25 @@ parts array. Three knobs drive what gets pulled and how:
 | `notebook_format` (str) | how Notebooks are saved — `"py"` (default), `"txt"`, `"ipynb"`, or `"parts"` |
 | `format_by_type` (dict) | per-type `?format=` override for **non-Notebook** types; missing key = parts mode |
 
+### Supported item types
+
+| Item type | getDefinition? | Default content | Notes |
+|---|---|---|---|
+| `Notebook` | ✅ | `.py` / `.scala` / `.sql` / `.r` source | Use `notebook_format` for ipynb/parts/txt |
+| `DataPipeline` | ✅ | `pipeline-content.json` + `.platform` | — |
+| `Dataflow` | ✅ | `mashup.pq` + `.platform` + metadata | — |
+| `Report` | ✅ | `report.json` + `definition.pbir` | PBIP format |
+| `SemanticModel` | ✅ | `model.bim` or TMDL parts | — |
+| `SparkJobDefinition` | ✅ | `SparkJobDefinitionV1.json` | — |
+| `KQLDatabase` | ✅ | Database schema + config parts | — |
+| `Eventstream` | ✅ | Topology JSON + metadata | — |
+| `Environment` | ✅ | `environment.yml` + `.platform` | — |
+| `Lakehouse` | ⚠️ metadata only | `lakehouse_metadata.json` | No Delta data; only id/name/properties |
+
+Items not in this table are still attempted using the generic `getDefinition`
+endpoint — a `parts` response body is saved verbatim; non-200 HTTP status
+surfaces as an `error` row in the manifest.
+
 Defaults:
 
 | type | default mode | what you get |
@@ -125,23 +144,95 @@ Set `group_by_type=False` to skip the per-type subfolder and lay every file
 flat under `<workspace>/` (only safe when `item_types` is a single type — the
 seed notebook's layout).
 
+## CLI usage (laptop / CI, no Spark)
+
+`fabric-downloader` is installed as a console-script entry-point when you
+`pip install fabric-downloader`.  Authentication falls back to
+`FABRIC_TOKEN` env-var, then Azure CLI / DefaultAzureCredential.
+
+```pwsh
+# Download all registered item types from one workspace
+fabric-downloader \
+    --workspace-id  <ws-uuid> \
+    --output        ./backups
+
+# Download only notebooks + pipelines, save notebooks as .ipynb
+fabric-downloader \
+    --workspace-id  <ws-uuid> \
+    --item-types    Notebook,DataPipeline \
+    --notebook-format ipynb \
+    --output        ./backups
+
+# Download everything except Lakehouse (metadata-only)
+fabric-downloader \
+    --workspace-id  <ws-uuid> \
+    --exclude-item-types Lakehouse \
+    --output        ./backups \
+    --token         $MY_FABRIC_TOKEN
+```
+
+| CLI flag | default | description |
+|---|---|---|
+| `--workspace-id` | *(required)* | Fabric workspace UUID |
+| `--output` | `fabric_downloads` | Root output directory |
+| `--run-label` | UTC timestamp | Sub-folder label for this run |
+| `--item-types` | `all` | Comma-separated types, or `all` |
+| `--exclude-item-types` | *(none)* | Comma-separated types to exclude |
+| `--notebook-format` | `py` | One of `py`, `txt`, `ipynb`, `parts` |
+| `--token` | *(auto)* | Pre-fetched bearer token |
+| `--no-admin-mode` | *(off)* | Use only user-scoped APIs |
+| `--no-skip-existing` | *(off)* | Re-download already-written files |
+| `--include-raw-definition` | *(off)* | Also save `_definition.json` per item |
+| `--max-items` | `0` (unlimited) | Hard cap for dry-runs |
+| `--manifest` | `<output>/<run>/_manifest.json` | Manifest file path |
+| `-v` / `--verbose` | *(off)* | DEBUG-level logging |
+
+The CLI writes a `_manifest.json` file next to the downloaded items.  Each
+entry contains `item_type`, `item_id`, `display_name`, `endpoint`, `sha256`,
+`bytes`, `status`, and `downloaded_at`.
+
+### Migration note: default `--item-types=all` vs old notebook-only behavior
+
+The CLI entry-point did not exist in versions prior to v0.4.  The
+`DownloaderConfig`-based Spark path defaults to
+`item_types=("Notebook",)` for backward compatibility — only notebooks are
+downloaded unless you explicitly add other types.
+
+When you use the new `fabric-downloader` CLI, `--item-types` defaults to
+`all`, which means **all ten registered handlers** run.  If you want the
+old notebook-only behavior, pass `--item-types Notebook` explicitly.
+
+
 ## Package layout
 
 ```
 fabric_downloader/
 ├── _version.py       Single source of truth for the version string
 ├── config.py         DownloaderConfig dataclass (every knob lives here)
+├── item_types.py     ItemHandler ABC + REGISTRY (type-registry pattern)
+├── cli.py            fabric-downloader console-script entry-point
 ├── paths.py          Lakehouse mount + ABFSS path math, safe_segment(),
 │                     resolve_paths(), build_paths(), write/exists helpers
 ├── diagnostics.py    probe() — resolved-target + optional API endpoint check
 ├── persist.py        write_manifest + SummaryReport (six SQL rollups)
+├── handlers/         Built-in per-type handler implementations
+│   ├── notebook.py             Notebook (py / txt / ipynb / parts modes)
+│   ├── pipeline.py             DataPipeline
+│   ├── dataflow.py             Dataflow (Gen2)
+│   ├── report.py               Report (PBIP)
+│   ├── semantic_model.py       SemanticModel (Power BI dataset)
+│   ├── spark_job_definition.py SparkJobDefinition
+│   ├── kql_database.py         KQLDatabase (Eventhouse)
+│   ├── eventstream.py          Eventstream
+│   ├── environment.py          Environment
+│   └── lakehouse.py            Lakehouse (metadata-only)
 ├── api/              Fabric REST mode (requires the [api] extra)
 │   ├── auth.py         token acquisition (5-source chain)
 │   ├── enumerate.py    /workspaces + /items listing, multi-type filter
 │   └── fetch.py        getDefinition with optional ?format= + LRO polling +
 │                       401-refresh hook
 └── spark/            Cluster fan-out (requires the [spark] extra)
-    ├── schema.py       manifest_schema (20-col StructType)
+    ├── schema.py       manifest_schema (21-col StructType, incl. sha256)
     ├── context.py      DownloadContext (immutable broadcast bag)
     ├── inventory.py    build_inventory + repartition_for_download
     ├── partition.py    process_definition_body (pure) + download_partition
@@ -216,6 +307,7 @@ runs accumulate (filter / partition by `run_label`).
 | `parts_saved` | int | parts actually written to disk (skips counted as 0) |
 | `has_content_part` | bool | did the API return a content/mashup/pipeline-content part? |
 | `payload_bytes` | long | decoded size of the primary content part |
+| `sha256` | string | nullable; hex SHA-256 digest of the primary content bytes |
 | `attempts` | int | API retry count |
 | `token_refreshes` | int | how many times the partition refreshed its token |
 | `http_status` | int | last HTTP status seen |
@@ -338,14 +430,32 @@ Gen2 metadata files).
 - Notebook *outputs* are downloaded as-is — they may contain secrets if your
   notebooks have been executed with sensitive data. The output table /
   files should be access-controlled.
-- `getDefinition` does not return a definition for every Fabric item type
-  (e.g. Lakehouse, Warehouse). Add only types that support the endpoint to
-  `item_types`; unsupported types will surface as HTTP 400 errors in the
+- `getDefinition` does not return useful Delta data for some Fabric item
+  types (e.g. Warehouse).  `Lakehouse` is handled specially — only
+  metadata (id, display name, properties) is saved; no Delta table data is
+  copied.  Other unsupported types will surface as HTTP 400 errors in the
   manifest.
 - The legacy `notebook_downloader.ipynb` (single-file Spark script) is kept
   for reference; this package supersedes it.
 
 ## Changelog
+
+### 0.4.0 (pending)
+- **ItemHandler registry** — new `item_types.py` with `ItemHandler` ABC and
+  `REGISTRY` dict; `@register` decorator auto-enlists handlers.
+- **Ten built-in handlers** — `Notebook`, `DataPipeline`, `Dataflow`, `Report`,
+  `SemanticModel`, `SparkJobDefinition`, `KQLDatabase`, `Eventstream`,
+  `Environment`, `Lakehouse` (metadata-only).
+- **CLI** — `fabric-downloader` console-script entry-point with
+  `--item-types`, `--exclude-item-types`, `--notebook-format`,
+  `--skip-existing`, `--include-raw-definition`, and `--max-items` flags.
+  Authentication falls back to `FABRIC_TOKEN` env-var → Azure CLI →
+  DefaultAzureCredential.
+- **sha256 in manifest** — `sha256` column added to the Spark manifest
+  StructType and computed in `process_definition_body`; the CLI manifest
+  JSON includes `sha256` and `bytes` per item.
+- **Extended `KNOWN_ITEM_TYPES`** — added `KQLDatabase`, `Eventstream`,
+  `Environment`, `Lakehouse` to the informational constant.
 
 ### 0.1.0
 - Initial wheel-based release. Generalizes the single-file

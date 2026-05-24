@@ -24,6 +24,10 @@ KNOWN_ITEM_TYPES: tuple[str, ...] = (
     "Report",
     "SemanticModel",
     "SparkJobDefinition",
+    "KQLDatabase",
+    "Eventstream",
+    "Environment",
+    "Lakehouse",
 )
 
 

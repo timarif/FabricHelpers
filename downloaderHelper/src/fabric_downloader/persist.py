@@ -75,7 +75,7 @@ _QUERIES = {
     ),
     "errors": (
         "SELECT workspace_name, item_type, display_name, item_id, "
-        "       http_status, attempts, token_refreshes, error "
+        "       http_status, attempts, token_refreshes, sha256, error "
         f"FROM {_MANIFEST_VIEW} "
         "WHERE status = 'error' "
         "ORDER BY workspace_name, item_type, display_name LIMIT 500"

@@ -17,6 +17,7 @@ Two layers, by design:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json as _json
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Iterator
@@ -50,6 +51,7 @@ def _row_dict(
     parts_saved: int = 0,
     has_content_part: bool | None = None,
     payload_bytes: int | None = None,
+    sha256: str | None = None,
     attempts: int = 0,
     token_refreshes: int = 0,
     http_status: int = 0,
@@ -72,6 +74,7 @@ def _row_dict(
         "has_content_part": has_content_part,
         "payload_bytes":    (int(payload_bytes) if payload_bytes is not None
                              else None),
+        "sha256":           sha256,
         "attempts":         int(attempts),
         "token_refreshes":  int(token_refreshes),
         "http_status":      int(http_status or 0),
@@ -231,6 +234,7 @@ def process_definition_body(
     payload_bytes = 0
     final_primary_rel = primary_rel
     final_primary_target = primary_target
+    primary_decoded: bytes | None = None
 
     try:
         if export_mode == "ipynb":
@@ -242,6 +246,7 @@ def process_definition_body(
                     decoded = base64.b64decode(payload)
                     ipynb_text = decoded.decode("utf-8", errors="replace")
                     payload_bytes = len(decoded)
+                    primary_decoded = decoded
                     break
             if ipynb_text is None:
                 return _row_dict(
@@ -256,6 +261,7 @@ def process_definition_body(
                     part_count=len(parts), parts_saved=0,
                     has_content_part=has_content_part,
                     payload_bytes=payload_bytes,
+                    sha256=hashlib.sha256(primary_decoded).hexdigest() if primary_decoded else None,
                     item_json_target=(item_target_uri
                                       if ctx.include_raw_definition else None),
                     status="skipped_exists", error=None)
@@ -294,6 +300,7 @@ def process_definition_body(
             decoded = base64.b64decode(payload)
             src_text = decoded.decode("utf-8", errors="replace")
             payload_bytes = len(decoded)
+            primary_decoded = decoded
             # In "py" mode honor the source language; in "txt" mode flatten
             # everything to `.txt`.
             file_ext = ext if export_mode == "py" else "txt"
@@ -307,6 +314,7 @@ def process_definition_body(
                     part_count=len(parts), parts_saved=0,
                     has_content_part=has_content_part,
                     payload_bytes=payload_bytes,
+                    sha256=hashlib.sha256(primary_decoded).hexdigest() if primary_decoded else None,
                     item_json_target=(item_target_uri
                                       if ctx.include_raw_definition else None),
                     status="skipped_exists", error=None)
@@ -336,6 +344,7 @@ def process_definition_body(
                     final_primary_rel = part_rel
                     final_primary_target = part_uri
                     payload_bytes = len(decoded)
+                    primary_decoded = decoded
 
         item_target_written = None
         if ctx.include_raw_definition:
@@ -356,6 +365,8 @@ def process_definition_body(
             part_count=len(parts), parts_saved=parts_saved,
             has_content_part=has_content_part,
             payload_bytes=payload_bytes,
+            sha256=(hashlib.sha256(primary_decoded).hexdigest()
+                    if primary_decoded else None),
             attempts=attempts, token_refreshes=token_refreshes,
             http_status=http_status,
             status=("ok" if parts_saved > 0 else "skipped_exists"),
