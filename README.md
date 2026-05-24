@@ -13,22 +13,23 @@ independent — pick the one you need.
 
 ### 🧱 [`coreHelper/`](./coreHelper) — `fabric-core` shared library
 
-The shared low-level helpers used by both `fabric-scanner` and
-`fabric-downloader`: token acquisition, OneLake / Fabric REST URL math,
-workspace + item enumeration with admin → user fallback, endpoint-probe
-diagnostics, and notebook-build serialization. Released as its own wheel so
-both consumers share one bug-fix surface.
+The shared low-level helpers used by all sibling wheels: token
+acquisition (six-source chain incl. SPN client credentials),
+OneLake / Fabric REST URL math, workspace + item enumeration with
+admin → user fallback, a retrying urllib JSON client with paged
+iterators, endpoint-probe diagnostics, and notebook-build serialization.
+Released as its own wheel so every consumer shares one bug-fix surface.
 
 ```
-              ┌──────────────────┐
-              │   fabric-core    │
-              └────────┬─────────┘
-                       │   imported by
-        ┌──────────────┴──────────────┐
-        ▼                             ▼
-┌──────────────────┐         ┌──────────────────────┐
-│  fabric-scanner  │         │  fabric-downloader   │
-└──────────────────┘         └──────────────────────┘
+                  ┌──────────────────┐
+                  │   fabric-core    │
+                  └────────┬─────────┘
+                           │   imported by
+        ┌──────────────────┼──────────────────┐
+        ▼                  ▼                  ▼
+┌──────────────────┐ ┌──────────────────────┐ ┌──────────────┐
+│  fabric-scanner  │ │  fabric-downloader   │ │  fabric-mpe  │
+└──────────────────┘ └──────────────────────┘ └──────────────┘
 ```
 
 See [`coreHelper/README.md`](./coreHelper/README.md) for the public API and
@@ -75,34 +76,40 @@ configuration, output schema, and sample queries.
 
 ---
 
-### 🔐 [`mpeHelper/`](./mpeHelper) — Fabric Managed Private Endpoint Manager
+### 🔐 [`mpeHelper/`](./mpeHelper) — `fabric-mpe` Managed Private Endpoint Manager
 
-A Fabric notebook (`mpe_manager.ipynb`) that gives you a safe, auditable,
-end-to-end lifecycle for **Managed Private Endpoints (MPEs)** across one or
-more Fabric workspaces:
+An installable wheel (`fabric-mpe`) plus a thin eight-cell orchestration
+notebook that gives you a safe, auditable, end-to-end lifecycle for
+**Managed Private Endpoints** (MPEs) across one or more Fabric workspaces:
 
 ```
 INVENTORY  →  DRY-RUN  →  DELETE  →  RECREATE  →  APPROVE
 ```
 
-Every step is gated by an explicit flag, capped by a hard limit, and persisted
-to a Delta audit table — so nothing destructive happens by accident and you
-always have a paper trail.
+Every step is gated by an explicit flag on `MpeConfig`, capped by a hard
+limit, and persisted to a Delta audit table — so nothing destructive
+happens by accident and you always have a paper trail.
 
-- **Inventory** every MPE the caller can see across selected workspaces.
-- **Dry-run** filters to preview which MPEs would be deleted (refuses if
-  matches exceed `MAX_DELETES`).
-- **Delete** only when `COMMIT=True`, with every HTTP response logged.
-- **Recreate** MPEs from the most-recent delete-audit or any prior inventory
-  snapshot, stamping each `requestMessage` with a run marker.
-- **Approve** the resulting Pending Private Endpoint Connections on the Azure
-  side via the ARM REST API, matched by the run marker.
+- **Inventory** every MPE the caller can see, written to Delta + JSON + CSV.
+- **Dry-run** filters preview which MPEs would be deleted (refuses if
+  matches exceed `max_deletes`).
+- **Delete** only when `commit=True`, with every HTTP response logged.
+- **Recreate** MPEs from the most-recent delete-audit or any prior
+  inventory snapshot, stamping each `requestMessage` with a run marker.
+- **Approve** the resulting Pending Private Endpoint Connections on the
+  Azure side via the ARM REST API, matched by the run marker.
 
-A standalone CLI variant covers inventory + delete for workstation use without
-Spark.
+```python
+from fabric_mpe import MpeConfig, inventory, delete, recreate, approve, probe
+cfg = MpeConfig(workspace_scope="visible", name_filter=r"^test-")
+probe(cfg)
+inv = inventory.run(cfg, spark)
+targets = delete.dry_run(cfg, spark)
+# Flip cfg.commit=True when ready, then run delete.commit / recreate.run / approve.run.
+```
 
-See [`mpeHelper/README_mpe.md`](./mpeHelper/README_mpe.md) for full
-configuration, cell-by-cell architecture, and safety semantics.
+See [`mpeHelper/README.md`](./mpeHelper/README.md) for full configuration,
+output schemas, ARM RBAC notes, and troubleshooting.
 
 ---
 

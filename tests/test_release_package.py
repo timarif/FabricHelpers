@@ -68,7 +68,7 @@ def test_scanner_legacy_tag_is_considered_for_next_bump(
     assert tag == "scanner-v0.3.5"
 
 
-@pytest.mark.parametrize("package", ["core", "downloader"])
+@pytest.mark.parametrize("package", ["core", "downloader", "mpe"])
 def test_non_scanner_packages_ignore_legacy_v_tags(
     monkeypatch: pytest.MonkeyPatch,
     package: str,

@@ -7,7 +7,7 @@ on:
     inputs:
       package:
         type: choice
-        options: [core, scanner, downloader]
+        options: [core, scanner, downloader, mpe]
         required: true
       bump:
         type: choice
@@ -43,6 +43,7 @@ jobs:
       core: ${{ steps.outputs.outputs.core }}
       scanner: ${{ steps.outputs.outputs.scanner }}
       downloader: ${{ steps.outputs.outputs.downloader }}
+      mpe: ${{ steps.outputs.outputs.mpe }}
 
     steps:
       - name: Checkout main with full history
@@ -81,6 +82,8 @@ jobs:
               - 'scannerHelper/**'
             downloader:
               - 'downloaderHelper/**'
+            mpe:
+              - 'mpeHelper/**'
 
       - name: Set detection outputs
         id: outputs
@@ -92,11 +95,13 @@ jobs:
           PATH_CORE: ${{ steps.changes.outputs.core || 'false' }}
           PATH_SCANNER: ${{ steps.changes.outputs.scanner || 'false' }}
           PATH_DOWNLOADER: ${{ steps.changes.outputs.downloader || 'false' }}
+          PATH_MPE: ${{ steps.changes.outputs.mpe || 'false' }}
         run: |
           set -euo pipefail
           core=false
           scanner=false
           downloader=false
+          mpe=false
 
           if [ "${SHOULD_RUN}" = "true" ]; then
             if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
@@ -104,12 +109,14 @@ jobs:
                 core) core=true ;;
                 scanner) scanner=true ;;
                 downloader) downloader=true ;;
+                mpe) mpe=true ;;
                 *) echo "::error::Unknown manual package '${MANUAL_PACKAGE}'"; exit 1 ;;
               esac
             else
               core="${PATH_CORE}"
               scanner="${PATH_SCANNER}"
               downloader="${PATH_DOWNLOADER}"
+              mpe="${PATH_MPE}"
             fi
           fi
 
@@ -117,7 +124,8 @@ jobs:
           echo "core=${core}" >> "$GITHUB_OUTPUT"
           echo "scanner=${scanner}" >> "$GITHUB_OUTPUT"
           echo "downloader=${downloader}" >> "$GITHUB_OUTPUT"
-          echo "should_run=${SHOULD_RUN} core=${core} scanner=${scanner} downloader=${downloader}"
+          echo "mpe=${mpe}" >> "$GITHUB_OUTPUT"
+          echo "should_run=${SHOULD_RUN} core=${core} scanner=${scanner} downloader=${downloader} mpe=${mpe}"
 
   release-core:
     name: release core
@@ -193,6 +201,28 @@ jobs:
       id-token: write
     with:
       package: downloader
+      bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
+      version_override: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+      dependency_source: ${{ (github.event_name == 'workflow_dispatch' && inputs.dependency_source_override != 'auto') && inputs.dependency_source_override || 'local' }}
+      skip_pypi: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_pypi || false }}
+
+  release-mpe:
+    name: release mpe
+    needs: [detect, release-core, wait-for-core-pypi, release-scanner, release-downloader]
+    if: |
+      always() &&
+      needs.detect.outputs.should_run == 'true' &&
+      needs.detect.outputs.mpe == 'true' &&
+      (needs.release-core.result == 'success' || needs.release-core.result == 'skipped') &&
+      (needs.wait-for-core-pypi.result == 'success' || needs.wait-for-core-pypi.result == 'skipped') &&
+      (needs.release-scanner.result == 'success' || needs.release-scanner.result == 'skipped') &&
+      (needs.release-downloader.result == 'success' || needs.release-downloader.result == 'skipped')
+    uses: ./.github/workflows/release-package.yml
+    permissions:
+      contents: write
+      id-token: write
+    with:
+      package: mpe
       bump: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
       version_override: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
       dependency_source: ${{ (github.event_name == 'workflow_dispatch' && inputs.dependency_source_override != 'auto') && inputs.dependency_source_override || 'local' }}

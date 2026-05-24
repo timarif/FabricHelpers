@@ -7,7 +7,7 @@ on:
         description: "Package to re-release from an existing tag."
         required: true
         type: choice
-        options: [core, scanner, downloader]
+        options: [core, scanner, downloader, mpe]
       tag:
         description: "Existing package tag to (re-)build and release (e.g. scanner-v0.3.5)."
         required: true

@@ -1,30 +1,31 @@
 # Contributing to FabricHelpers
 
-This monorepo ships **three independent wheels** that move together:
+This monorepo ships **four independent wheels** that move together:
 
 ```
-              ┌──────────────────┐
-              │   fabric-core    │   shared low-level helpers
-              │  (coreHelper/)   │   auth · paths · enumerate · diagnostics · build_notebook
-              └────────┬─────────┘
-                       │   imported by
-        ┌──────────────┴──────────────┐
-        ▼                             ▼
-┌──────────────────┐         ┌──────────────────────┐
-│  fabric-scanner  │         │  fabric-downloader   │
-│ (scannerHelper/) │         │ (downloaderHelper/)  │
-└──────────────────┘         └──────────────────────┘
+                  ┌──────────────────┐
+                  │   fabric-core    │   shared low-level helpers
+                  │  (coreHelper/)   │   auth · paths · enumerate · diagnostics
+                  │                  │   · http · build_notebook
+                  └────────┬─────────┘
+                           │   imported by
+        ┌──────────────────┼──────────────────┐
+        ▼                  ▼                  ▼
+┌──────────────────┐ ┌──────────────────────┐ ┌──────────────┐
+│  fabric-scanner  │ │  fabric-downloader   │ │  fabric-mpe  │
+│ (scannerHelper/) │ │ (downloaderHelper/)  │ │ (mpeHelper/) │
+└──────────────────┘ └──────────────────────┘ └──────────────┘
 ```
 
-`fabric-scanner` and `fabric-downloader` both depend on `fabric-core>=0.1,<1.0`.
-They never import each other.
+`fabric-scanner`, `fabric-downloader`, and `fabric-mpe` all depend on
+`fabric-core>=…,<1.0`. They never import each other.
 
 ---
 
 ## Dependency direction (enforced by tests)
 
-- `fabric-core` MUST NOT import from `fabric-scanner` or `fabric-downloader`.
-- `fabric-scanner` MUST NOT import from `fabric-downloader` (and vice versa).
+- `fabric-core` MUST NOT import from `fabric-scanner`, `fabric-downloader`, or `fabric-mpe`.
+- `fabric-scanner`, `fabric-downloader`, and `fabric-mpe` MUST NOT import each other.
 
 Each package ships an AST-walking test (`tests/unit/test_no_cross_imports.py`)
 that fails CI if these rules are broken.
@@ -104,6 +105,7 @@ namespace; patching the re-exported name in the consumer is a no-op.
 | `fabric-core` | `core-v` | `core-v0.1.0` |
 | `fabric-scanner` | `v` (legacy, BC) or `scanner-v` | `v0.3.4`, `scanner-v0.4.0` |
 | `fabric-downloader` | `downloader-v` | `downloader-v0.1.0` |
+| `fabric-mpe` | `mpe-v` | `mpe-v0.1.0` |
 
 Releases are driven by `.github/workflows/main.yml`. On every push to `main`:
 
@@ -142,15 +144,17 @@ the manual `release.yml` workflow with `package` + `tag` inputs.
 ## Local development
 
 ```pwsh
-# Install all three packages editable, in dependency order.
+# Install all four packages editable, in dependency order.
 cd coreHelper       ; pip install -e ".[dev,api,notebook]" ; cd ..
 cd scannerHelper    ; pip install -e ".[dev,api,spark]"    ; cd ..
 cd downloaderHelper ; pip install -e ".[dev,api,spark]"    ; cd ..
+cd mpeHelper        ; pip install -e ".[dev]"              ; cd ..
 
-# Run all three test suites.
+# Run all four test suites.
 cd coreHelper       ; pytest tests/unit -q ; cd ..
 cd scannerHelper    ; pytest tests/unit -q ; cd ..
 cd downloaderHelper ; pytest tests/unit -q ; cd ..
+cd mpeHelper        ; pytest tests/unit -q ; cd ..
 
 # Run the release helper unit tests.
 pytest tests/test_release_package.py -q
@@ -162,6 +166,7 @@ the result:
 ```pwsh
 cd scannerHelper    ; python scripts/build_notebook.py        ; cd ..
 cd downloaderHelper ; python scripts/build_notebook.py        ; cd ..
+cd mpeHelper        ; python scripts/build_notebook.py        ; cd ..
 ```
 
 Notebook cell IDs are derived from a SHA-1 of the cell source, so re-running

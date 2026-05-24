@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       package:
-        description: "Package to release: core, scanner, or downloader."
+        description: "Package to release: core, scanner, downloader, or mpe."
         required: true
         type: string
       skip_bump:
@@ -65,7 +65,7 @@ jobs:
       bumped: ${{ steps.commit.outputs.bumped || 'false' }}
     env:
       PACKAGE: ${{ inputs.package }}
-      PKG_DIR: ${{ inputs.package == 'core' && 'coreHelper' || inputs.package == 'scanner' && 'scannerHelper' || 'downloaderHelper' }}
+      PKG_DIR: ${{ inputs.package == 'core' && 'coreHelper' || inputs.package == 'scanner' && 'scannerHelper' || inputs.package == 'mpe' && 'mpeHelper' || 'downloaderHelper' }}
 
     steps:
       - name: Checkout main with full history

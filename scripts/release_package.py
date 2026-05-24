@@ -68,6 +68,12 @@ PACKAGE_CONFIGS: dict[str, PackageConfig] = {
         module_name="fabric_downloader",
         tag_prefix="downloader-v",
     ),
+    "mpe": PackageConfig(
+        name="mpe",
+        directory=REPO_ROOT / "mpeHelper",
+        module_name="fabric_mpe",
+        tag_prefix="mpe-v",
+    ),
 }
 
 
