@@ -82,25 +82,44 @@ not as a re-uploaded notebook.
 
 The same engine downloads any Fabric item type whose
 `POST /v1/workspaces/{wid}/items/{iid}/getDefinition` endpoint returns a
-parts array. Two knobs drive what gets pulled:
+parts array. Three knobs drive what gets pulled and how:
 
 | knob | effect |
 |---|---|
 | `item_types` (tuple) | which types are enumerated + downloaded |
-| `format_by_type` (dict) | per-type `?format=` override; missing key = parts mode |
+| `notebook_format` (str) | how Notebooks are saved — `"py"` (default), `"txt"`, `"ipynb"`, or `"parts"` |
+| `format_by_type` (dict) | per-type `?format=` override for **non-Notebook** types; missing key = parts mode |
 
 Defaults:
 
-| type | default format | default mode | what you get |
-|---|---|---|---|
-| `Notebook`     | `ipynb` | ipynb | one `.ipynb` per notebook |
-| `DataPipeline` | (none)  | parts | `pipeline-content.json` + `.platform` |
-| `Dataflow`     | (none)  | parts | `mashup.pq` + `.platform` + … |
-| `Report`, `SemanticModel`, … | (none) | parts | every part the API returns |
+| type | default mode | what you get |
+|---|---|---|
+| `Notebook`     | `py`    | one native source file per notebook — `<name>__<id>.py` for PySpark/Python, `.scala` / `.sql` / `.r` for the other Spark languages |
+| `DataPipeline` | `parts` | `pipeline-content.json` + `.platform` (each saved with `.txt` suffix) |
+| `Dataflow`     | `parts` | `mashup.pq` + `.platform` + … |
+| `Report`, `SemanticModel`, … | `parts` | every part the API returns |
 
-`format_by_type = {}` forces parts mode for every type (including notebooks,
-which then look like `notebook-content.py` + `.platform.txt` — the same shape
-as the upstream `Export-FabricNotebooks` script).
+`notebook_format` choices:
+
+- **`"py"`** *(default)* — single native source file per notebook. Calls the
+  API without a `?format=` hint so Fabric returns the language-specific
+  source (`notebook-content.py` + `.platform`) and we save just the source
+  with the matching extension. **Note**: non-Python notebooks end up with
+  `.scala`, `.sql`, or `.r` extensions — `"py"` is the user-facing name
+  but the writer respects the notebook's actual language.
+- **`"txt"`** — same fetch as `"py"`, but the source is always written as
+  a single `<name>__<id>.txt` regardless of language. Handy for indexing
+  pipelines that only consume plain text.
+- **`"ipynb"`** — sends `?format=ipynb` and saves one self-contained
+  `<name>__<id>.ipynb` per notebook (the previous default).
+- **`"parts"`** — no `?format=` hint; writes every part of the definition
+  envelope as a separate `.txt` file (same shape as non-notebook types).
+
+**Migration note (v0.4):** The legacy
+`format_by_type={"Notebook": "ipynb"}` knob is now rejected. Switch to
+`notebook_format="ipynb"` for the previous default behavior, or accept the
+new `"py"` default. Non-Notebook entries in `format_by_type` are
+unchanged.
 
 Set `group_by_type=False` to skip the per-type subfolder and lay every file
 flat under `<workspace>/` (only safe when `item_types` is a single type — the

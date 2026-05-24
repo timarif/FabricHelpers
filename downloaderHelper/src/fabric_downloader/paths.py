@@ -172,6 +172,13 @@ def build_paths(
     fname = f"{safe_name}__{item_id}"
     if export_mode == "ipynb":
         primary = f"{folder}/{fname}.ipynb"
+    elif export_mode == "py":
+        # Placeholder extension at planning time. `process_definition_body`
+        # refines this to the actual language extension (`.py` / `.scala` /
+        # `.sql` / `.r`) once it sees the part the API returns.
+        primary = f"{folder}/{fname}.py"
+    elif export_mode == "txt":
+        primary = f"{folder}/{fname}.txt"
     else:
         primary = f"{folder}/{fname}__definition.txt"
     return primary, f"{folder}/{fname}.item.json"

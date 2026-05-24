@@ -5,17 +5,21 @@ from __future__ import annotations
 import pytest
 
 from fabric_downloader import DownloaderConfig
-from fabric_downloader.config import KNOWN_ITEM_TYPES, DEFAULT_FORMAT_BY_TYPE
+from fabric_downloader.config import (
+    DEFAULT_FORMAT_BY_TYPE, KNOWN_ITEM_TYPES, NOTEBOOK_FORMATS,
+)
 
 
 # -------------------- defaults --------------------
 
 
-def test_default_config_is_notebook_ipynb_mode():
+def test_default_config_is_notebook_py_mode():
     cfg = DownloaderConfig()
     assert cfg.item_types == ("Notebook",)
-    assert cfg.format_for("Notebook") == "ipynb"
-    assert cfg.export_mode_for("Notebook") == "ipynb"
+    # `.py` is the new default: native source, no `?format=` hint
+    assert cfg.notebook_format == "py"
+    assert cfg.format_for("Notebook") is None
+    assert cfg.export_mode_for("Notebook") == "py"
     assert cfg.export_mode_for("DataPipeline") == "parts"
     assert cfg.write_to_default_lakehouse is True
 
@@ -26,8 +30,14 @@ def test_known_item_types_covers_documented_set():
         assert t in KNOWN_ITEM_TYPES
 
 
-def test_default_format_by_type_only_overrides_notebook():
-    assert DEFAULT_FORMAT_BY_TYPE == {"Notebook": "ipynb"}
+def test_default_format_by_type_is_empty():
+    """Notebook is no longer driven via `format_by_type` — the dedicated
+    `notebook_format` knob owns it."""
+    assert DEFAULT_FORMAT_BY_TYPE == {}
+
+
+def test_notebook_formats_constant_lists_supported_values():
+    assert NOTEBOOK_FORMATS == ("py", "txt", "ipynb", "parts")
 
 
 # -------------------- validation --------------------
@@ -77,6 +87,18 @@ def test_external_lakehouse_accepted_with_both_ids():
     assert cfg.write_workspace_id == "ws-1"
 
 
+def test_unknown_notebook_format_rejected():
+    with pytest.raises(ValueError, match="notebook_format"):
+        DownloaderConfig(notebook_format="markdown")
+
+
+def test_format_by_type_notebook_rejected_with_migration_hint():
+    """The legacy `format_by_type={"Notebook": "ipynb"}` knob raises a
+    loud migration error rather than being silently overridden."""
+    with pytest.raises(ValueError, match="notebook_format"):
+        DownloaderConfig(format_by_type={"Notebook": "ipynb"})
+
+
 # -------------------- format / export_mode --------------------
 
 
@@ -87,9 +109,42 @@ def test_format_for_returns_none_when_no_override():
     assert cfg.export_mode_for("DataPipeline") == "parts"
 
 
-def test_export_mode_for_notebook_when_overridden_to_ipynb():
-    cfg = DownloaderConfig(format_by_type={"Notebook": "ipynb"})
+def test_notebook_format_ipynb_routes_to_ipynb_mode():
+    cfg = DownloaderConfig(notebook_format="ipynb")
+    assert cfg.format_for("Notebook") == "ipynb"
     assert cfg.export_mode_for("Notebook") == "ipynb"
+
+
+def test_notebook_format_py_sends_no_format_hint():
+    cfg = DownloaderConfig(notebook_format="py")
+    # No `?format=` hint — Fabric's default `fabricGitSource` returns the
+    # native-source part we extract on the writer side.
+    assert cfg.format_for("Notebook") is None
+    assert cfg.export_mode_for("Notebook") == "py"
+
+
+def test_notebook_format_parts_writes_every_part():
+    cfg = DownloaderConfig(notebook_format="parts")
+    assert cfg.format_for("Notebook") is None
+    assert cfg.export_mode_for("Notebook") == "parts"
+
+
+def test_notebook_format_txt_sends_no_format_hint():
+    """`txt` mode reuses the `fabricGitSource` fetch (no `?format=` hint)
+    but flattens the saved file to `.txt` on the writer side."""
+    cfg = DownloaderConfig(notebook_format="txt")
+    assert cfg.format_for("Notebook") is None
+    assert cfg.export_mode_for("Notebook") == "txt"
+
+
+def test_export_mode_for_non_notebook_with_ipynb_override():
+    """Non-notebook types still honor the per-type `?format=` map."""
+    cfg = DownloaderConfig(
+        item_types=("CustomThing",),
+        format_by_type={"CustomThing": "ipynb"},
+    )
+    assert cfg.format_for("CustomThing") == "ipynb"
+    assert cfg.export_mode_for("CustomThing") == "ipynb"
 
 
 def test_export_mode_for_falls_back_to_parts_for_non_ipynb_overrides():
@@ -107,7 +162,7 @@ def test_export_mode_for_falls_back_to_parts_for_non_ipynb_overrides():
 def test_from_dict_round_trip():
     cfg = DownloaderConfig(
         item_types=("Notebook", "DataPipeline"),
-        format_by_type={"Notebook": "ipynb"},
+        notebook_format="ipynb",
         admin_mode=False,
         max_items=10,
         skip_existing=False,
@@ -136,6 +191,8 @@ def test_to_dict_serializes_tuples_and_mappings_to_plain():
     d = cfg.to_dict()
     assert d["item_types"] == ["Notebook", "DataPipeline"]
     assert isinstance(d["format_by_type"], dict)
+    # The new knob round-trips as a plain string.
+    assert d["notebook_format"] == "py"
 
 
 # -------------------- immutability --------------------

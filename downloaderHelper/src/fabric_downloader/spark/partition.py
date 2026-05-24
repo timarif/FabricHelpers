@@ -110,6 +110,41 @@ def _is_content_part(part_path: str) -> bool:
             or p.endswith(".ipynb"))
 
 
+# Notebook source-mode extensions. The Fabric `fabricGitSource` response
+# returns `notebook-content.<lang>` where `<lang>` is the notebook language:
+# `py` (PySpark / Python), `scala`, `sql`, `r`. The whitelist keeps the
+# downloader from being tricked into writing arbitrary filenames if the
+# API ever returns an unexpected part path.
+_NOTEBOOK_SOURCE_EXTS: tuple[str, ...] = ("py", "scala", "sql", "r")
+
+
+def _find_notebook_source_part(
+    parts: list[dict],
+) -> tuple[dict | None, str | None, list[str]]:
+    """Locate the single `notebook-content.<lang>` part in a definition.
+
+    Returns ``(part, ext_without_dot, all_matches)``. ``part`` is None when
+    no source part exists; ``all_matches`` carries every matched basename
+    so callers can render an unambiguous error if more than one is found.
+    """
+    matches: list[tuple[dict, str]] = []
+    for p in parts:
+        raw = (p.get("path") or "").strip("/")
+        basename = raw.rsplit("/", 1)[-1].lower()
+        if not basename.startswith("notebook-content."):
+            continue
+        ext = basename[len("notebook-content."):]
+        if not ext or "." in ext:
+            continue
+        if ext not in _NOTEBOOK_SOURCE_EXTS:
+            continue
+        matches.append((p, ext))
+    if not matches:
+        return None, None, []
+    seen = [f"notebook-content.{e}" for _, e in matches]
+    return matches[0][0], matches[0][1], seen
+
+
 def process_definition_body(
     *,
     ctx: DownloadContext,
@@ -225,6 +260,57 @@ def process_definition_body(
                                       if ctx.include_raw_definition else None),
                     status="skipped_exists", error=None)
             _write(primary_target, ipynb_text)
+            parts_saved = 1
+
+        elif export_mode in ("py", "txt"):
+            # Single-file native-source mode. The API returns the source
+            # under `notebook-content.<lang>` plus `.platform`; we save
+            # only the source. In "py" mode the extension matches the
+            # notebook's actual language (`.py`, `.scala`, `.sql`, `.r`);
+            # in "txt" mode the source is always saved as `.txt`.
+            src_part, ext, all_matches = _find_notebook_source_part(parts)
+            if src_part is None:
+                return _row_dict(
+                    **base_kwargs,
+                    part_count=len(parts), has_content_part=has_content_part,
+                    status="error",
+                    error=(f"no notebook-content.<py|scala|sql|r> part in "
+                           f"definition (got {len(parts)} parts)"))
+            if len(all_matches) > 1:
+                return _row_dict(
+                    **base_kwargs,
+                    part_count=len(parts), has_content_part=has_content_part,
+                    status="error",
+                    error=(f"multiple notebook source parts found: "
+                           f"{all_matches}"))
+            payload = src_part.get("payload") or ""
+            if not payload:
+                return _row_dict(
+                    **base_kwargs,
+                    part_count=len(parts), has_content_part=has_content_part,
+                    status="error",
+                    error=(f"notebook-content.{ext} part has empty "
+                           f"payload"))
+            decoded = base64.b64decode(payload)
+            src_text = decoded.decode("utf-8", errors="replace")
+            payload_bytes = len(decoded)
+            # In "py" mode honor the source language; in "txt" mode flatten
+            # everything to `.txt`.
+            file_ext = ext if export_mode == "py" else "txt"
+            final_primary_rel = f"{folder}/{fname_prefix}.{file_ext}"
+            final_primary_target = ctx.join_target(final_primary_rel)
+            base_kwargs["rel_path"] = final_primary_rel
+            base_kwargs["primary_target"] = final_primary_target
+            if ctx.skip_existing and _exists(final_primary_target):
+                return _row_dict(
+                    **base_kwargs,
+                    part_count=len(parts), parts_saved=0,
+                    has_content_part=has_content_part,
+                    payload_bytes=payload_bytes,
+                    item_json_target=(item_target_uri
+                                      if ctx.include_raw_definition else None),
+                    status="skipped_exists", error=None)
+            _write(final_primary_target, src_text)
             parts_saved = 1
 
         else:  # parts mode (universal for non-notebook types)

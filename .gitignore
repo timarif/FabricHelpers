@@ -8,3 +8,5 @@ htmlcov/
 # but include here so root-level git status stays quiet).
 .venv/
 .venv-*/
+.pr_body.md
+*.tmp
