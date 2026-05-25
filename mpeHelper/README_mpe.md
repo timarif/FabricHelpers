@@ -573,6 +573,60 @@ notebook.
 
 ---
 
+## Terraform variant
+
+A declarative IaC alternative lives under
+[`mpeHelper/terraform/`](./terraform/). It manages the same
+`INVENTORY → DELETE → RECREATE → APPROVE` lifecycle through the official
+[`microsoft/fabric` provider](https://registry.terraform.io/providers/microsoft/fabric/latest/docs)
+plus two thin Python scripts:
+
+```
+mpeHelper/terraform/
+├── main.tf, variables.tf, outputs.tf, providers.tf, versions.tf
+├── modules/
+│   └── managed_private_endpoint/         # wraps fabric_workspace_managed_private_endpoint
+└── scripts/
+    ├── import_existing.py                # inventories existing MPEs and emits `terraform import` commands
+    └── approve_pending.py                # ARM-side approve for any PECs still Pending after `apply`
+```
+
+Typical workflow:
+
+```bash
+# 1. Inventory + generate import commands from any existing MPEs
+python scripts/import_existing.py --workspace <ws-id> --out import.sh
+
+# 2. Bring the existing endpoints under Terraform state
+terraform init
+bash import.sh
+
+# 3. Make changes declaratively, then apply
+terraform plan
+terraform apply
+
+# 4. Approve the target-side PECs the provider can't approve itself
+python scripts/approve_pending.py --workspace <ws-id>
+
+# 5. Tear down
+terraform destroy
+```
+
+Use the Terraform module when you need:
+
+- **Reproducible state** across environments (dev / preprod / prod) without
+  re-running notebook cells.
+- **Plan + review** in PRs before any mutation hits Fabric.
+- **`terraform destroy` + re-apply** as a routine MPE refresh pattern.
+
+The notebook and Terraform variants are independent — pick whichever matches
+your operational model. See
+[`mpeHelper/terraform/README.md`](./terraform/README.md) for the full
+provider configuration, authentication options, and the `import` /
+`approve` script reference.
+
+---
+
 ## Developer notes
 
 ### Cells-and-build pattern
