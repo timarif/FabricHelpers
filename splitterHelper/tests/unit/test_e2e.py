@@ -249,12 +249,14 @@ def test_rewrite_patches_semantic_model_workspace_ref(monkeypatch):
 
 def test_idempotent_rerun_actually_zero_mutations(monkeypatch, tmp_path):
     """Two consecutive runs with identical inputs: run 2 makes zero mutations."""
+    num_items_per_type = 5
+    expected_total_items = num_items_per_type * 2
     initial_items = [
         {"id": f"nb{i}", "type": "Notebook", "displayName": f"Notebook {i}"}
-        for i in range(1, 6)
+        for i in range(1, num_items_per_type + 1)
     ] + [
         {"id": f"lh{i}", "type": "Lakehouse", "displayName": f"Lakehouse {i}"}
-        for i in range(1, 6)
+        for i in range(1, num_items_per_type + 1)
     ]
     items_by_workspace = {
         SOURCE_WS: [dict(item) for item in initial_items],
@@ -340,7 +342,7 @@ def test_idempotent_rerun_actually_zero_mutations(monkeypatch, tmp_path):
         ]
     )
     assert rc1 == 0
-    assert len(mutation_calls) == 10
+    assert len(mutation_calls) == expected_total_items
 
     listed_workspaces.clear()
     mutation_calls.clear()
@@ -370,7 +372,7 @@ def test_idempotent_rerun_actually_zero_mutations(monkeypatch, tmp_path):
 
     with (run_2_out / "splitter_report.csv").open(newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
-    assert len(rows) == 10
+    assert len(rows) == expected_total_items
     assert all(row["action"] == "leave" for row in rows)
 
     run_2_audits = list(run_2_out.glob("splitter_audit_*.jsonl"))
