@@ -40,10 +40,70 @@ def _parsed_struct_type():
     ])
 
 
+def _any_leaf_non_null(col: Any, dtype: Any) -> Any:
+    """Build a Column expression that is True iff any leaf field of `col`
+    (with declared type `dtype`) is non-null. Recursively walks nested
+    StructTypes. Returns ``F.lit(False)`` for an empty struct.
+    """
+    from functools import reduce
+
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import StructType
+
+    if isinstance(dtype, StructType):
+        if not dtype.fields:
+            return F.lit(False)
+        sub = [_any_leaf_non_null(col.getField(f.name), f.dataType)
+               for f in dtype.fields]
+        return reduce(lambda a, b: a | b, sub)
+    return col.isNotNull()
+
+
+def _normalize_ai_error_to_string(df: Any) -> Any:
+    """Coerce the ``ai_error`` column to StringType.
+
+    Background: Microsoft Fabric's ``df.ai.generate_response(...,
+    error_col="ai_error")`` writes the error column as a STRUCT matching
+    the underlying SynapseML HTTP envelope -- typically
+    ``STRUCT<response: STRING, status: STRUCT<protocolVersion, statusCode,
+    reasonPhrase>>``. The previous implementation of
+    :func:`parse_ai_response_df` assumed StringType, which caused an
+    ``AnalysisException`` ("Input to casewhen should all be the same type,
+    but it's [STRING, STRUCT<...>]") when the downstream parse_error
+    branch mixed a string literal with the struct column.
+
+    Behavior:
+      - If ``ai_error`` is already StringType (or absent), the DataFrame
+        is returned unchanged (preserves the older string-based contract
+        that unit tests rely on).
+      - If ``ai_error`` is a StructType, rows where every leaf field is
+        null are mapped to NULL (success), and rows with any populated
+        leaf are mapped to ``to_json(ai_error)`` so downstream code sees
+        a non-null string error message.
+    """
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import StructType
+
+    if "ai_error" not in df.columns:
+        return df
+    err_field = df.schema["ai_error"]
+    if not isinstance(err_field.dataType, StructType):
+        return df
+
+    has_error = _any_leaf_non_null(F.col("ai_error"), err_field.dataType)
+    return df.withColumn(
+        "ai_error",
+        F.when(has_error, F.to_json(F.col("ai_error")))
+         .otherwise(F.lit(None).cast("string")),
+    )
+
+
 def parse_ai_response_df(audit_df: Any) -> Any:
     """Parse the `ai_response` JSON column into typed fields.
 
     Defensive:
+      - the ``ai_error`` column is normalized to StringType when Fabric's
+        ``df.ai.generate_response`` writes it as a STRUCT (HTTP envelope)
       - rows with `ai_error IS NOT NULL` get NULL parsed fields
       - scores outside [0, 100] are clamped
       - null arrays become empty arrays
@@ -56,6 +116,9 @@ def parse_ai_response_df(audit_df: Any) -> Any:
     from pyspark.sql import functions as F
 
     parsed_t = _parsed_struct_type()
+
+    # Normalize ai_error first so the CASE WHEN below mixes only strings.
+    audit_df = _normalize_ai_error_to_string(audit_df)
 
     # Parse — null when ai_response is null OR not valid JSON of the right shape.
     df = audit_df.withColumn(

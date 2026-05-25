@@ -135,6 +135,190 @@ def test_parse_passes_through_ai_error(spark):
     assert row["destinations"] == []
 
 
+# --- regression: Fabric's df.ai.generate_response writes ai_error as a STRUCT,
+# not a string. parse_ai_response_df must coerce it before the parse_error
+# CASE WHEN mixes the column with a string literal, otherwise Spark raises
+# `[DATATYPE_MISMATCH.DATA_DIFF_TYPES] Input to casewhen should all be the
+# same type, but it's [STRING, STRUCT<...>]`. -----------------------------
+
+def _make_audit_df_struct_error(spark, rows):
+    """Like `_make_audit_df`, but `ai_error` is a STRUCT matching Fabric's
+    HTTP envelope schema: STRUCT<response, status<protocolVersion, statusCode,
+    reasonPhrase>>. Used to reproduce the AnalysisException seen in real
+    Fabric notebook runs.
+    """
+    from pyspark.sql.types import (
+        IntegerType,
+        LongType,
+        StringType,
+        StructField,
+        StructType,
+    )
+    proto_t = StructType([
+        StructField("protocol", StringType(),  True),
+        StructField("major",    IntegerType(), True),
+        StructField("minor",    IntegerType(), True),
+    ])
+    status_t = StructType([
+        StructField("protocolVersion", proto_t,       True),
+        StructField("statusCode",      IntegerType(), True),
+        StructField("reasonPhrase",    StringType(),  True),
+    ])
+    err_t = StructType([
+        StructField("response", StringType(), True),
+        StructField("status",   status_t,     True),
+    ])
+    base = [
+        ("workspace_id",                      StringType()),
+        ("workspace_name",                    StringType()),
+        ("source_lakehouse_id",               StringType()),
+        ("source_lakehouse_name",             StringType()),
+        ("source_dated_partition",            StringType()),
+        ("notebook_id",                       StringType()),
+        ("display_name",                      StringType()),
+        ("attached_lakehouse_id",             StringType()),
+        ("attached_lakehouse_name",           StringType()),
+        ("attached_lakehouse_workspace_id",   StringType()),
+        ("attached_lakehouse_workspace_name", StringType()),
+        ("content_length",                    LongType()),
+        ("content_hash",                      StringType()),
+        ("chunk_index",                       IntegerType()),
+        ("chunk_count",                       IntegerType()),
+        ("chunk_text",                        StringType()),
+        ("ai_response",                       StringType()),
+    ]
+    schema = StructType(
+        [StructField(n, t, True) for n, t in base]
+        + [StructField("ai_error", err_t, True)],
+    )
+    canonical = []
+    for r in rows:
+        d = {n: r.get(n) for n, _ in base}
+        d["ai_error"] = r.get("ai_error")
+        canonical.append(d)
+    return spark.createDataFrame(canonical, schema=schema)
+
+
+def test_parse_coerces_struct_ai_error_top_level_null(spark):
+    """Top-level null struct (Fabric's normal success contract) is treated as
+    'no error' — parsing proceeds and ai_error stays NULL."""
+    response = json.dumps({
+        "external_resource_access_score": 30,
+        "exfiltration_risk_score": 20,
+        "sources": [],
+        "destinations": [],
+        "rationale": "ok",
+    })
+    df = _make_audit_df_struct_error(spark, [{
+        "notebook_id": "nb1", "display_name": "nb1.ipynb",
+        "chunk_index": 0, "chunk_count": 1,
+        "ai_response": response, "ai_error": None,
+    }])
+    row = parse_ai_response_df(df).collect()[0]
+    assert row["ai_error"] is None
+    assert row["external_resource_access_score"] == 30
+    assert row["exfiltration_risk_score"] == 20
+
+
+def test_parse_coerces_struct_ai_error_populated_http_envelope(spark):
+    """Populated struct error becomes a JSON string carrying the HTTP info;
+    parsed score fields are NULL and downstream aggregation can count it as
+    chunks_errored."""
+    df = _make_audit_df_struct_error(spark, [{
+        "notebook_id": "nb1", "display_name": "nb1.ipynb",
+        "chunk_index": 0, "chunk_count": 1,
+        "ai_response": None,
+        "ai_error": {
+            "response": "rate limit exceeded",
+            "status": {
+                "protocolVersion": {"protocol": "HTTP", "major": 1, "minor": 1},
+                "statusCode": 429,
+                "reasonPhrase": "Too Many Requests",
+            },
+        },
+    }])
+    row = parse_ai_response_df(df).collect()[0]
+    assert row["ai_error"] is not None
+    assert isinstance(row["ai_error"], str)
+    assert "429" in row["ai_error"]
+    assert "Too Many Requests" in row["ai_error"]
+    assert row["external_resource_access_score"] is None
+    assert row["exfiltration_risk_score"] is None
+
+
+def test_parse_coerces_struct_ai_error_all_null_leaves_treated_as_success(spark):
+    """A non-null struct whose every leaf field is null (defensive against
+    Spark/Fabric variants that materialize the struct envelope even on
+    success) is treated as 'no error' so chunks_parsed stays accurate."""
+    response = json.dumps({
+        "external_resource_access_score": 40,
+        "exfiltration_risk_score": 10,
+        "sources": [],
+        "destinations": [],
+        "rationale": "ok",
+    })
+    df = _make_audit_df_struct_error(spark, [{
+        "notebook_id": "nb1", "display_name": "nb1.ipynb",
+        "chunk_index": 0, "chunk_count": 1,
+        "ai_response": response,
+        "ai_error": {
+            "response": None,
+            "status": {
+                "protocolVersion": {"protocol": None, "major": None, "minor": None},
+                "statusCode": None,
+                "reasonPhrase": None,
+            },
+        },
+    }])
+    row = parse_ai_response_df(df).collect()[0]
+    assert row["ai_error"] is None
+    assert row["external_resource_access_score"] == 40
+
+
+def test_parse_coerces_struct_ai_error_runs_under_aggregate(spark):
+    """End-to-end: parse_ai_response_df → aggregate_chunks_to_notebooks
+    composes cleanly when the inbound ai_error is a STRUCT — this is the
+    exact pipeline shape from runner.run_ai_audit, and the original
+    AnalysisException was raised during plan analysis of this combined
+    pipeline."""
+    response = json.dumps({
+        "external_resource_access_score": 50,
+        "exfiltration_risk_score": 60,
+        "sources": [],
+        "destinations": [],
+        "rationale": "uses external requests.get",
+    })
+    df = _make_audit_df_struct_error(spark, [
+        {
+            "notebook_id": "nb1", "display_name": "nb1.ipynb",
+            "chunk_index": 0, "chunk_count": 2,
+            "ai_response": response, "ai_error": None,
+        },
+        {
+            "notebook_id": "nb1", "display_name": "nb1.ipynb",
+            "chunk_index": 1, "chunk_count": 2,
+            "ai_response": None,
+            "ai_error": {
+                "response": "service unavailable",
+                "status": {
+                    "protocolVersion": {"protocol": "HTTP", "major": 1, "minor": 1},
+                    "statusCode": 503,
+                    "reasonPhrase": "Service Unavailable",
+                },
+            },
+        },
+    ])
+    parsed = parse_ai_response_df(df)
+    rolled = aggregate_chunks_to_notebooks(parsed).collect()
+    assert len(rolled) == 1
+    row = rolled[0]
+    assert row["chunk_count"] == 2
+    assert row["chunks_parsed"] == 1
+    assert row["chunks_errored"] == 1
+    assert row["exfiltration_risk_score"] == 60
+    assert row["top_rationale"] == "uses external requests.get"
+
+
 # --- aggregate_chunks_to_notebooks ----------------------------------------
 
 def _parsed_row(notebook_id, display_name, chunk_index, chunk_count,
