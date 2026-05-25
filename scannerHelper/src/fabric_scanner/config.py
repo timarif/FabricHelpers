@@ -47,6 +47,12 @@ class ScannerConfig:
     inventory_table: str = "v2_inventory"
     output_table:    str = "v2_findings"
 
+    # --- Shared reporting lakehouse (opt-in, default off) -----------------
+    # When set, the runner writes fact_scan_findings rows to the shared
+    # reporting lakehouse via fabric_reporting.ReportingAdapter after the
+    # scan completes.  Requires the fabric-reporting package to be installed.
+    reporting_lakehouse: str = ""
+
     # --- Scanning behavior -------------------------------------------------
     min_severity: SeverityLevel = "low"
     scan_markdown_and_outputs: bool = True

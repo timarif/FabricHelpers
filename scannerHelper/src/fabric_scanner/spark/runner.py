@@ -143,6 +143,14 @@ def run(
     # --- Rollups (optional) -------------------------------------------------
     summary = _persist.summarize(findings_df, spark) if compute_summary else None
 
+    # --- Optional shared reporting lakehouse --------------------------------
+    if config.reporting_lakehouse:
+        from .. import reporting as _reporting
+        _reporting.write_scan_findings(
+            config, spark, findings_df,
+            scan_run_id=started.isoformat(),
+        )
+
     # --- Build summary counts for the result dataclass ---------------------
     by_severity = _collect_count(findings_df, "severity")
     by_category = _collect_count(findings_df, "category")

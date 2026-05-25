@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name            = "fabric-reporting"
+dynamic         = ["version"]
+description     = "Shared reporting adapter for Microsoft Fabric helpers — canonical Delta tables + semantic model foundation."
+readme          = "README.md"
+requires-python = ">=3.10"
+license         = { text = "MIT" }
+authors         = [{ name = "Tim Arif" }]
+keywords        = ["fabric", "lakehouse", "reporting", "delta", "analytics"]
+classifiers     = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    # Shared low-level helpers extracted into the fabric-core wheel.
+    "fabric-core>=0.1,<1.0",
+    # Schema validation for canonical row shapes.
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+spark = [
+    "pyspark>=3.5",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.5",
+    "build>=1.0",
+    "hatch>=1.9",
+]
+
+[project.urls]
+Homepage   = "https://github.com/timarif/FabricHelpers"
+Repository = "https://github.com/timarif/FabricHelpers"
+Issues     = "https://github.com/timarif/FabricHelpers/issues"
+
+[tool.hatch.version]
+path = "src/fabric_reporting/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fabric_reporting"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/fabric_reporting",
+    "tests",
+    "README.md",
+    "SCHEMA.md",
+    "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths       = ["tests"]
+addopts         = "-ra -q --strict-markers"
+markers         = [
+    "integration: requires pyspark + a local SparkSession (slow)",
+]
+filterwarnings  = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length    = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]  # let formatter handle long lines
