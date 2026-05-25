@@ -1,0 +1,27 @@
+# Terraform state — never commit
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash log
+crash.log
+crash.*.log
+
+# Sensitive variable files
+*.tfvars
+*.tfvars.json
+!terraform.tfvars.json.example
+
+# Provider plugins and lock file (re-run `terraform init` to regenerate)
+.terraform/
+.terraform.lock.hcl
+
+# Override files (local developer customisation)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration file
+.terraformrc
+terraform.rc
