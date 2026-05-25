@@ -296,10 +296,7 @@ def test_idempotent_rerun_actually_zero_mutations(monkeypatch, tmp_path):
             display_name = (body or {}).get("displayName")
             item_type = (body or {}).get("type")
             source_workspace_id, source_item = next(
-                (
-                    ws_id,
-                    item,
-                )
+                (ws_id, item)
                 for ws_id, workspace_items in items_by_workspace.items()
                 for item in workspace_items
                 if item.get("displayName") == display_name and item.get("type") == item_type

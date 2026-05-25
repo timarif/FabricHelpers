@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("fabric_splitter")
+_DRY_RUN_PLACEHOLDER_PREFIX = "<would-create:"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -222,21 +223,21 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
         workspace_a_id = (
             workspace_a_existing_id
             if workspace_a_existing_id
-            else f"<would-create: {args.workspace_a_name}>"
+            else f"{_DRY_RUN_PLACEHOLDER_PREFIX} {args.workspace_a_name}>"
         )
         workspace_b_id = (
             workspace_b_existing_id
             if workspace_b_existing_id
-            else f"<would-create: {args.workspace_b_name}>"
+            else f"{_DRY_RUN_PLACEHOLDER_PREFIX} {args.workspace_b_name}>"
         )
 
     # ------------------------------------------------------------------ #
     # 2. Discover items in source + targets                                #
     # ------------------------------------------------------------------ #
     workspace_ids_to_list = [args.source]
-    if not workspace_a_id.startswith("<would-create:"):
+    if not workspace_a_id.startswith(_DRY_RUN_PLACEHOLDER_PREFIX):
         workspace_ids_to_list.append(workspace_a_id)
-    if not workspace_b_id.startswith("<would-create:"):
+    if not workspace_b_id.startswith(_DRY_RUN_PLACEHOLDER_PREFIX):
         workspace_ids_to_list.append(workspace_b_id)
 
     log.info("Listing items in workspaces: %s", ", ".join(workspace_ids_to_list))
@@ -362,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
     if any_to_rewrite:
         log.info("Running reference-rewrite pass …")
         for row in plan:
+            # Leave rows are already at their target workspace and do not need
+            # post-move reference rewriting.
             if row.action != "move":
                 continue
             item = next((i for i in items if i.get("id") == row.item_id), None)
