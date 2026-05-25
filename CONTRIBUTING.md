@@ -1,6 +1,6 @@
 # Contributing to FabricHelpers
 
-This monorepo ships **three independent wheels** that move together:
+This monorepo ships **four independent wheels** that move together:
 
 ```
               ┌──────────────────┐
@@ -8,23 +8,24 @@ This monorepo ships **three independent wheels** that move together:
               │  (coreHelper/)   │   auth · paths · enumerate · diagnostics · build_notebook
               └────────┬─────────┘
                        │   imported by
-        ┌──────────────┴──────────────┐
-        ▼                             ▼
-┌──────────────────┐         ┌──────────────────────┐
-│  fabric-scanner  │         │  fabric-downloader   │
-│ (scannerHelper/) │         │ (downloaderHelper/)  │
-└──────────────────┘         └──────────────────────┘
+        ┌──────────────┼──────────────────┐
+        ▼              ▼                  ▼
+┌──────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
+│  fabric-scanner  │  │  fabric-downloader   │  │  fabric-splitter     │
+│ (scannerHelper/) │  │ (downloaderHelper/)  │  │ (splitterHelper/)    │
+└──────────────────┘  └──────────────────────┘  └──────────────────────┘
 ```
 
-`fabric-scanner` and `fabric-downloader` both depend on `fabric-core>=0.1,<1.0`.
-They never import each other.
+`fabric-scanner`, `fabric-downloader`, and `fabric-splitter` all depend on
+`fabric-core>=0.1,<1.0`. They never import each other.
 
 ---
 
 ## Dependency direction (enforced by tests)
 
-- `fabric-core` MUST NOT import from `fabric-scanner` or `fabric-downloader`.
-- `fabric-scanner` MUST NOT import from `fabric-downloader` (and vice versa).
+- `fabric-core` MUST NOT import from `fabric-scanner`, `fabric-downloader`, or `fabric-splitter`.
+- `fabric-scanner` MUST NOT import from `fabric-downloader` or `fabric-splitter` (and vice versa).
+- `fabric-splitter` MUST NOT import from `fabric-scanner` or `fabric-downloader`.
 
 Each package ships an AST-walking test (`tests/unit/test_no_cross_imports.py`)
 that fails CI if these rules are broken.
@@ -104,6 +105,7 @@ namespace; patching the re-exported name in the consumer is a no-op.
 | `fabric-core` | `core-v` | `core-v0.1.0` |
 | `fabric-scanner` | `v` (legacy, BC) or `scanner-v` | `v0.3.4`, `scanner-v0.4.0` |
 | `fabric-downloader` | `downloader-v` | `downloader-v0.1.0` |
+| `fabric-splitter` | `splitter-v` | `splitter-v0.1.0` |
 
 Releases are driven by `.github/workflows/main.yml`. On every push to `main`:
 
@@ -142,15 +144,17 @@ the manual `release.yml` workflow with `package` + `tag` inputs.
 ## Local development
 
 ```pwsh
-# Install all three packages editable, in dependency order.
+# Install all four packages editable, in dependency order.
 cd coreHelper       ; pip install -e ".[dev,api,notebook]" ; cd ..
 cd scannerHelper    ; pip install -e ".[dev,api,spark]"    ; cd ..
 cd downloaderHelper ; pip install -e ".[dev,api,spark]"    ; cd ..
+cd splitterHelper   ; pip install -e ".[dev]"              ; cd ..
 
-# Run all three test suites.
+# Run all four test suites.
 cd coreHelper       ; pytest tests/unit -q ; cd ..
 cd scannerHelper    ; pytest tests/unit -q ; cd ..
 cd downloaderHelper ; pytest tests/unit -q ; cd ..
+cd splitterHelper   ; pytest tests/unit -q ; cd ..
 
 # Run the release helper unit tests.
 pytest tests/test_release_package.py -q

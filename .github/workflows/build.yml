@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       package:
-        description: "Package to build: core, scanner, or downloader."
+        description: "Package to build: core, scanner, downloader, or splitter."
         required: true
         type: string
       ref:
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      PKG_DIR: ${{ inputs.package == 'core' && 'coreHelper' || inputs.package == 'scanner' && 'scannerHelper' || 'downloaderHelper' }}
+      PKG_DIR: ${{ inputs.package == 'core' && 'coreHelper' || inputs.package == 'scanner' && 'scannerHelper' || inputs.package == 'splitter' && 'splitterHelper' || 'downloaderHelper' }}
 
     steps:
       - name: Validate inputs
@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           case "${{ inputs.package }}" in
-            core|scanner|downloader) ;;
+            core|scanner|downloader|splitter) ;;
             *) echo "::error::Unknown package '${{ inputs.package }}'"; exit 1 ;;
           esac
           case "${{ inputs.dependency_source }}" in
@@ -59,7 +59,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: ${{ inputs.package == 'core' && 'coreHelper/pyproject.toml' || inputs.package == 'scanner' && 'scannerHelper/pyproject.toml' || 'downloaderHelper/pyproject.toml' }}
+          cache-dependency-path: ${{ inputs.package == 'core' && 'coreHelper/pyproject.toml' || inputs.package == 'scanner' && 'scannerHelper/pyproject.toml' || inputs.package == 'splitter' && 'splitterHelper/pyproject.toml' || 'downloaderHelper/pyproject.toml' }}
 
       - name: Pre-install local fabric-core
         if: inputs.package != 'core' && inputs.dependency_source == 'local'
@@ -79,7 +79,7 @@ jobs:
         run: pytest tests/unit/ -q
 
       - name: Verify generated notebooks are in sync with build_notebook.py
-        if: inputs.package != 'core'
+        if: inputs.package != 'core' && inputs.package != 'splitter'
         working-directory: ${{ env.PKG_DIR }}
         run: |
           python scripts/build_notebook.py
@@ -156,6 +156,33 @@ jobs:
           expected = namespace["__version__"]
           print("installed version:", __version__)
           assert __version__ == expected, f"expected {expected}, got {__version__}"
+          PY
+
+      - name: Smoke-test fabric-splitter wheel
+        if: inputs.package == 'splitter'
+        working-directory: ${{ env.PKG_DIR }}
+        env:
+          DEPENDENCY_SOURCE: ${{ inputs.dependency_source }}
+        run: |
+          rm -rf .venv-smoke
+          python -m venv .venv-smoke
+          if [ "${DEPENDENCY_SOURCE}" = "local" ]; then
+            ./.venv-smoke/bin/pip install --quiet ../coreHelper
+          fi
+          ./.venv-smoke/bin/pip install --quiet dist/fabric_splitter-*.whl
+          ./.venv-smoke/bin/python - <<'PY'
+          from pathlib import Path
+          from fabric_splitter import classify, __version__
+          namespace = {}
+          exec(Path("src/fabric_splitter/_version.py").read_text(encoding="utf-8"), namespace)
+          expected = namespace["__version__"]
+          print("installed version:", __version__)
+          assert __version__ == expected, f"expected {expected}, got {__version__}"
+          # Quick classify smoke test
+          items = [{"id": "i1", "type": "Notebook"}, {"id": "i2", "type": "Report"}]
+          result = classify(items, {"notebook"})
+          assert result == {"i1": "A", "i2": "B"}, f"unexpected: {result}"
+          print("splitter smoke ok")
           PY
 
       - name: Upload dist artifact
