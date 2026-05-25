@@ -275,7 +275,7 @@ with `run_label` so `approve_pending.py` can scope approval to this run only.
 
 ## CI integration
 
-The `.github/workflows/ci.yml` includes a `terraform` job (path-filtered to
+The `.github/workflows/ci-terraform.yml` workflow includes a `terraform` job (path-filtered to
 `mpeHelper/terraform/**`) that runs:
 
 1. `terraform fmt -check` — formatting validation
