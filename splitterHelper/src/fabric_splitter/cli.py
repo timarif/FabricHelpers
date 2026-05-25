@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("fabric_splitter")
-_DRY_RUN_PLACEHOLDER_PREFIX = "<would-create:"
+_DRY_RUN_PLACEHOLDER_PREFIX = "<would-create: "
 
 
 def _build_parser() -> argparse.ArgumentParser:
