@@ -295,12 +295,17 @@ def test_idempotent_rerun_actually_zero_mutations(monkeypatch, tmp_path):
             target_workspace_id = url.split("/workspaces/")[1].split("/")[0]
             display_name = (body or {}).get("displayName")
             item_type = (body or {}).get("type")
-            source_workspace_id, source_item = next(
-                (ws_id, item)
-                for ws_id, workspace_items in items_by_workspace.items()
-                for item in workspace_items
-                if item.get("displayName") == display_name and item.get("type") == item_type
+            source_and_item = next(
+                (
+                    (ws_id, item)
+                    for ws_id, workspace_items in items_by_workspace.items()
+                    for item in workspace_items
+                    if item.get("displayName") == display_name and item.get("type") == item_type
+                ),
+                None,
             )
+            assert source_and_item is not None, f"Missing source item for {display_name}/{item_type}"
+            source_workspace_id, source_item = source_and_item
             items_by_workspace[source_workspace_id] = [
                 item
                 for item in items_by_workspace[source_workspace_id]

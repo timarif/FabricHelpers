@@ -223,12 +223,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
         workspace_a_id = (
             workspace_a_existing_id
             if workspace_a_existing_id
-            else f"{_DRY_RUN_PLACEHOLDER_PREFIX} {args.workspace_a_name}>"
+            else f"{_DRY_RUN_PLACEHOLDER_PREFIX}{args.workspace_a_name}>"
         )
         workspace_b_id = (
             workspace_b_existing_id
             if workspace_b_existing_id
-            else f"{_DRY_RUN_PLACEHOLDER_PREFIX} {args.workspace_b_name}>"
+            else f"{_DRY_RUN_PLACEHOLDER_PREFIX}{args.workspace_b_name}>"
         )
 
     # ------------------------------------------------------------------ #
