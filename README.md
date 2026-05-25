@@ -106,20 +106,20 @@ configuration, cell-by-cell architecture, and safety semantics.
 
 ---
 
-### 💾 [`downloaderHelper/`](./downloaderHelper) — Fabric Item Downloader (Notebook / Pipeline / Dataflow)
+### 💾 [`downloaderHelper/`](./downloaderHelper) — Fabric Item Downloader (10 item types)
 
 An installable wheel (`fabric-downloader`) plus a thin five-cell orchestration
-notebook that backs up **Fabric notebooks, data pipelines, and dataflows** to
-a Lakehouse. Generalizes the legacy `notebook_downloader.ipynb` script to any
-Fabric item type whose `getDefinition` endpoint returns a parts array, driven
-by a single `item_types` tuple on the config:
+notebook that backs up **Fabric notebooks, pipelines, dataflows, reports,
+semantic models, and more** to a Lakehouse. Driven by a type registry and an
+`item_types` tuple on the config (Spark path) or `--item-types` flag (CLI path):
 
 ```python
 from fabric_downloader import DownloaderConfig
 from fabric_downloader.spark import run
 
 cfg = DownloaderConfig(
-    item_types     = ("Notebook", "DataPipeline", "Dataflow"),
+    item_types     = ("Notebook", "DataPipeline", "Dataflow",
+                      "Report", "SemanticModel"),
     output_root    = "fabric_item_backups",
     manifest_table = "fabric_download_manifest",
     skip_existing  = True,
@@ -129,18 +129,24 @@ result = run(cfg, spark)
 display(result.summary.by_type)
 ```
 
-- **Multi-type by config** — Notebook (`?format=ipynb`), DataPipeline
-  (parts: `pipeline-content.json` + `.platform`), Dataflow Gen2 (parts:
-  `mashup.pq` + `.platform` + metadata), plus any other type that exposes
-  `getDefinition`. Per-type `format_by_type` override available.
+```pwsh
+# CLI (laptop / CI, no Spark required)
+fabric-downloader --workspace-id <uuid> --item-types Notebook,Report --output ./backups
+```
+
+- **10 registered handlers** — Notebook (py/txt/ipynb/parts modes), DataPipeline,
+  Dataflow, Report (PBIP), SemanticModel, SparkJobDefinition, KQLDatabase,
+  Eventstream, Environment, Lakehouse (metadata-only).
+- **Type registry** — `fabric_downloader.item_types.REGISTRY` maps item-type
+  strings to `ItemHandler` subclasses; add custom types without a package release.
 - **Tenant-scale fan-out** — Spark `mapPartitions` + async `aiohttp` with
   bounded per-executor concurrency, single-flight 401 token refresh,
   202 LRO polling, and 429/5xx exponential backoff.
 - **Restart-safe** — `skip_existing=True` skips files already written so
   re-runs with the same `run_label` resume cleanly.
 - **Accumulating manifest** — one row per item attempt is appended to a
-  Delta table; six SQL rollups (by_status, by_type, by_workspace, errors,
-  balance_check, run_summary) are computed automatically.
+  Delta table (or JSON file via CLI); each row includes `itemType`, `sha256`,
+  `payload_bytes`, and six SQL rollups.
 - **Wheel-based** — bug fixes and new item-type support ship as new wheel
   versions; the orchestration notebook stays a thin 12-cell shim pinned to
   a specific `fabric-downloader==X.Y.Z`.

@@ -46,6 +46,9 @@ dev = [
     "nbformat>=5.9",
 ]
 
+[project.scripts]
+fabric-downloader = "fabric_downloader.cli:main"
+
 [project.urls]
 Homepage   = "https://github.com/timarif/FabricHelpers"
 Repository = "https://github.com/timarif/FabricHelpers"
