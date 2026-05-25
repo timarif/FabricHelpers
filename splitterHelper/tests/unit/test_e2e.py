@@ -306,7 +306,18 @@ def test_idempotent_rerun_actually_zero_mutations(monkeypatch, tmp_path):
                 ),
                 None,
             )
-            assert source_and_item is not None, f"Missing source item for {display_name}/{item_type}"
+            if source_and_item is None:
+                available = {
+                    ws_id: [
+                        (item.get("displayName"), item.get("type"))
+                        for item in workspace_items
+                    ]
+                    for ws_id, workspace_items in items_by_workspace.items()
+                }
+                pytest.fail(
+                    f"Missing source item for {display_name}/{item_type}; "
+                    f"available items: {available}"
+                )
             source_workspace_id, source_item = source_and_item
             items_by_workspace[source_workspace_id] = [
                 item
