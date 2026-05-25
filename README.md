@@ -20,15 +20,18 @@ diagnostics, and notebook-build serialization. Released as its own wheel so
 both consumers share one bug-fix surface.
 
 ```
-              ┌──────────────────┐
-              │   fabric-core    │
-              └────────┬─────────┘
-                       │   imported by
-        ┌──────────────┴──────────────┐
-        ▼                             ▼
-┌──────────────────┐         ┌──────────────────────┐
-│  fabric-scanner  │         │  fabric-downloader   │
-└──────────────────┘         └──────────────────────┘
+                          ┌──────────────────┐
+                          │   fabric-core    │
+                          └────────┬─────────┘
+                                   │   imported by
+        ┌──────────────┬───────────┴───────────┬──────────────┐
+        ▼              ▼                       ▼              ▼
+┌──────────────┐ ┌──────────────────┐ ┌──────────────┐ ┌──────────────────┐
+│fabric-scanner│ │fabric-downloader │ │fabric-splitter│ │fabric-reporting  │
+└──────┬───────┘ └────────┬─────────┘ └──────┬───────┘ └──────────▲───────┘
+       │                  │                  │                    │
+       └──────────────────┴──────────────────┴────────────────────┘
+                       opt-in shared landing zone
 ```
 
 See [`coreHelper/README.md`](./coreHelper/README.md) for the public API and
@@ -101,8 +104,17 @@ always have a paper trail.
 A standalone CLI variant covers inventory + delete for workstation use without
 Spark.
 
-See [`mpeHelper/README_mpe.md`](./mpeHelper/README_mpe.md) for full
-configuration, cell-by-cell architecture, and safety semantics.
+**Three flavors, same lifecycle:**
+
+| Flavor | Path | Best for |
+|---|---|---|
+| Notebook (Spark) | [`mpeHelper/mpe_manager.ipynb`](./mpeHelper/mpe_manager.ipynb) | Tenant-scale runs with a Delta audit trail |
+| Standalone CLI  | [`mpeHelper/fabric_mpe_manager.py`](./mpeHelper/) | Inventory + delete from a workstation, no Spark |
+| **Terraform module** *(new)* | [`mpeHelper/terraform/`](./mpeHelper/terraform/) | Declarative IaC: import existing → plan → apply → approve, fully reproducible |
+
+See [`mpeHelper/README_mpe.md`](./mpeHelper/README_mpe.md) for the notebook/CLI
+walkthrough and [`mpeHelper/terraform/README.md`](./mpeHelper/terraform/README.md)
+for the Terraform module.
 
 ---
 
@@ -188,6 +200,46 @@ fabric-splitter ... --apply
 
 See [`splitterHelper/README.md`](./splitterHelper/README.md) for the full
 CLI reference, a worked example, and the rewrite-vs-manual matrix.
+
+---
+
+### 📊 [`reportingHelper/`](./reportingHelper) — Shared Lakehouse Landing Zone
+
+An installable wheel (`fabric-reporting`) that gives every other helper a
+**single shared lakehouse schema** they can opt into — the "single pane of
+glass" for Fabric administrators. Scanner findings, downloader manifests, and
+MPE lifecycle events all land in the same six canonical Delta tables so a
+Power BI report can join them cleanly.
+
+```python
+from fabric_reporting import ReportingAdapter
+
+adapter = ReportingAdapter(
+    spark,
+    "abfss://<ws>@onelake.dfs.fabric.microsoft.com/<lh>.Lakehouse/Tables",
+)
+adapter.ensure_tables()
+adapter.write_facts("fact_scan_findings", rows)
+```
+
+- **Canonical schema** — three fact tables (`fact_scan_findings`,
+  `fact_downloads`, `fact_mpe_lifecycle`) plus three dimensions
+  (`dim_workspace`, `dim_item_type`, `dim_severity`). Full column docs in
+  [`reportingHelper/SCHEMA.md`](./reportingHelper/SCHEMA.md).
+- **Opt-in everywhere** — every helper integration is off by default. Enable
+  per helper via a single flag (e.g. `ScannerConfig.reporting_lakehouse=...`).
+- **Pydantic-validated writes** — row schemas are enforced client-side before
+  any Delta write, so a bad row never lands in the lakehouse.
+- **Idempotent table creation** — `ensure_tables()` is safe to call on every
+  run; `write_facts()` uses Delta `MERGE` on the table's primary key.
+
+**Wired today (PR 1 of 3):** `scannerHelper` opt-in writes to
+`fact_scan_findings`. **Coming next:** `downloaderHelper` + `mpeHelper`
+adapters (PR 2) and the TMDL semantic model + `.pbip` report (PR 3) — tracked
+on [Issue #27](https://github.com/timarif/FabricHelpers/issues/27).
+
+See [`reportingHelper/README.md`](./reportingHelper/README.md) for the adapter
+API, install instructions, and per-helper integration examples.
 
 ---
 

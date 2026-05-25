@@ -6,6 +6,11 @@ helper can call (opt-in) to write findings, downloads, and MPE lifecycle
 events into a **single shared lakehouse landing zone** — the "single pane of
 glass" for Fabric administrators.
 
+> **Status:** PR 1 of 3 — the foundation (schema, adapter, scanner
+> integration) is live. The downloader + MPE adapters (PR 2) and the TMDL
+> semantic model + `.pbip` report (PR 3) are tracked on
+> [Issue #27](https://github.com/timarif/FabricHelpers/issues/27).
+
 ---
 
 ## Overview

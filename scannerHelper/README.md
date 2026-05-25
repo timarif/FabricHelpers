@@ -96,6 +96,35 @@ This is the same scanner the Spark partition function runs — just
 without the cluster fan-out. Useful for CI lint, pre-commit hooks, or
 quick spot-checks.
 
+## Shared reporting lakehouse (opt-in)
+
+If you want scanner findings to land in the cross-helper
+[`fabric-reporting`](../reportingHelper/README.md) lakehouse — alongside
+`downloaderHelper` and `mpeHelper` outputs for a unified Power BI report —
+set `reporting_lakehouse` on the config:
+
+```python
+from fabric_scanner import ScannerConfig
+from fabric_scanner.spark import run
+
+cfg = ScannerConfig(
+    source_mode         = "lakehouse",
+    reporting_lakehouse = "abfss://<ws>@onelake.dfs.fabric.microsoft.com/<lh>.Lakehouse/Tables",
+)
+result = run(cfg, spark)
+# After the scan completes, findings are also written into
+# fact_scan_findings under the shared lakehouse path.
+```
+
+The integration is **off by default** — leaving `reporting_lakehouse` unset
+preserves the existing single-table output behavior. When set, the scanner
+calls `ReportingAdapter.write_facts("fact_scan_findings", ...)` after the
+native scan completes; rows are Pydantic-validated and merged on the
+finding-id primary key.
+
+See [`reportingHelper/SCHEMA.md`](../reportingHelper/SCHEMA.md) for the
+target table's full column list.
+
 ## Package layout
 
 ```
