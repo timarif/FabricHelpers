@@ -211,7 +211,10 @@ jobs:
           fi
 
           # Build the actorIds JSON array: existing assignees + Copilot.
-          actor_ids_json=$(jq -c \
+          # `-n` (null input) is essential — without it, jq waits for stdin,
+          # gets /dev/null in GH Actions, and produces an empty string,
+          # which then breaks --argjson below with "invalid JSON text".
+          actor_ids_json=$(jq -nc \
             --arg bot "${BOT_ID}" \
             --arg existing "${EXISTING_IDS}" \
             '($existing | split(",") | map(select(length > 0))) + [$bot] | unique')
