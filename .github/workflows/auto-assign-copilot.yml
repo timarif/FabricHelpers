@@ -211,26 +211,34 @@ jobs:
           fi
 
           # Build the actorIds JSON array: existing assignees + Copilot.
-          actor_ids_json=$(jq -c --arg bot "${BOT_ID}" --arg existing "${EXISTING_IDS}" '
-            ($existing | split(",") | map(select(length > 0))) + [$bot] | unique')
+          actor_ids_json=$(jq -c \
+            --arg bot "${BOT_ID}" \
+            --arg existing "${EXISTING_IDS}" \
+            '($existing | split(",") | map(select(length > 0))) + [$bot] | unique')
+          echo "actorIds payload: ${actor_ids_json}"
 
-          gh api graphql \
-            -f query='
-              mutation($assignable: ID!, $actors: [ID!]!) {
-                replaceActorsForAssignable(input: {
-                  assignableId: $assignable,
-                  actorIds: $actors
-                }) {
-                  assignable {
-                    ... on Issue {
-                      number
-                      assignees(first: 20) { nodes { login } }
-                    }
+          # Build the full GraphQL request body. `gh api graphql -F`/`-f` only
+          # support scalar values — for the [ID!]! actors array we need to
+          # POST a full {query, variables} body with proper typed JSON, so we
+          # construct it with jq --argjson and pipe via --input -.
+          jq -nc \
+            --arg q 'mutation($assignable: ID!, $actors: [ID!]!) {
+              replaceActorsForAssignable(input: {
+                assignableId: $assignable,
+                actorIds: $actors
+              }) {
+                assignable {
+                  ... on Issue {
+                    number
+                    assignees(first: 20) { nodes { login } }
                   }
                 }
-              }' \
-            -F assignable="${ISSUE_ID}" \
-            -f actors="${actor_ids_json}"
+              }
+            }' \
+            --arg assignable "${ISSUE_ID}" \
+            --argjson actors "${actor_ids_json}" \
+            '{query: $q, variables: {assignable: $assignable, actorIds: $actors}}' \
+          | gh api graphql --input -
 
           echo "✅ Copilot assigned to issue #${{ steps.issue.outputs.number }}"
 
