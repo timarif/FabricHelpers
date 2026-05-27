@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("fabric_splitter")
+_DRY_RUN_PLACEHOLDER_PREFIX = "<would-create: "
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -136,14 +137,43 @@ def _get_token(token_arg: str | None) -> str:
         sys.exit(1)
 
 
-def _list_source_items(
-    source_id: str,
+def _list_workspace_items(
+    workspace_id: str,
     token: str,
     fabric_base: str,
 ) -> list[dict]:
     from ._http import paged_get
 
-    return paged_get(f"{fabric_base}/v1/workspaces/{source_id}/items", token)
+    return paged_get(f"{fabric_base}/v1/workspaces/{workspace_id}/items", token)
+
+
+def _list_items_across_workspaces(
+    workspace_ids: list[str],
+    token: str,
+    fabric_base: str,
+) -> list[dict]:
+    items: list[dict] = []
+    seen_workspaces: set[str] = set()
+    seen_items: set[str] = set()
+
+    for workspace_id in workspace_ids:
+        if workspace_id in seen_workspaces:
+            continue
+        seen_workspaces.add(workspace_id)
+        ws_items = _list_workspace_items(workspace_id, token, fabric_base)
+        log.info("Found %d items in workspace %s.", len(ws_items), workspace_id)
+        for item in ws_items:
+            item_id = item.get("id")
+            if item_id and item_id in seen_items:
+                continue
+            item_with_workspace = dict(item)
+            item_with_workspace.setdefault("workspaceId", workspace_id)
+            item_with_workspace["current_workspace_id"] = workspace_id
+            items.append(item_with_workspace)
+            if item_id:
+                seen_items.add(item_id)
+
+    return items
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI entry)
@@ -162,31 +192,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
     types_to_a = {t.strip().lower() for t in args.types_to_a.split(",") if t.strip()}
 
     # ------------------------------------------------------------------ #
-    # 1. Discover items in the source workspace                            #
+    # 1. Resolve / create target workspaces                                #
     # ------------------------------------------------------------------ #
-    log.info("Listing items in source workspace %s …", args.source)
-    try:
-        items = _list_source_items(args.source, token, fabric_base)
-    except urllib.error.HTTPError as exc:
-        log.error("Failed to list items in source workspace: HTTP %s", exc.code)
-        return 1
-
-    log.info("Found %d items in source workspace.", len(items))
-
-    # ------------------------------------------------------------------ #
-    # 2. Classify items                                                    #
-    # ------------------------------------------------------------------ #
-    from .classify import classify
-
-    classification = classify(items, types_to_a)
-    a_count = sum(1 for v in classification.values() if v == "A")
-    b_count = sum(1 for v in classification.values() if v == "B")
-    log.info("Classification: %d → workspace A, %d → workspace B", a_count, b_count)
-
-    # ------------------------------------------------------------------ #
-    # 3. Resolve / create target workspaces                                #
-    # ------------------------------------------------------------------ #
-    from .workspaces import get_or_create_workspace, copy_role_assignments
+    from .workspaces import (
+        copy_role_assignments,
+        get_or_create_workspace,
+        get_workspace_id,
+    )
 
     if args.apply:
         log.info("--apply mode: creating/verifying target workspaces …")
@@ -201,9 +213,51 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
             log.error("Failed to create/verify target workspaces: HTTP %s", exc.code)
             return 1
     else:
-        # Dry-run: use placeholder IDs so the plan still shows meaningful data
-        workspace_a_id = f"<would-create: {args.workspace_a_name}>"
-        workspace_b_id = f"<would-create: {args.workspace_b_name}>"
+        workspace_a_existing_id = get_workspace_id(
+            args.workspace_a_name, token, fabric_base=fabric_base
+        )
+        workspace_b_existing_id = get_workspace_id(
+            args.workspace_b_name, token, fabric_base=fabric_base
+        )
+        # Dry-run: use placeholder IDs when targets don't exist yet.
+        workspace_a_id = (
+            workspace_a_existing_id
+            if workspace_a_existing_id
+            else f"{_DRY_RUN_PLACEHOLDER_PREFIX}{args.workspace_a_name}>"
+        )
+        workspace_b_id = (
+            workspace_b_existing_id
+            if workspace_b_existing_id
+            else f"{_DRY_RUN_PLACEHOLDER_PREFIX}{args.workspace_b_name}>"
+        )
+
+    # ------------------------------------------------------------------ #
+    # 2. Discover items in source + targets                                #
+    # ------------------------------------------------------------------ #
+    workspace_ids_to_list = [args.source]
+    if not workspace_a_id.startswith(_DRY_RUN_PLACEHOLDER_PREFIX):
+        workspace_ids_to_list.append(workspace_a_id)
+    if not workspace_b_id.startswith(_DRY_RUN_PLACEHOLDER_PREFIX):
+        workspace_ids_to_list.append(workspace_b_id)
+
+    log.info("Listing items in workspaces: %s", ", ".join(workspace_ids_to_list))
+    try:
+        items = _list_items_across_workspaces(workspace_ids_to_list, token, fabric_base)
+    except urllib.error.HTTPError as exc:
+        log.error("Failed to list items in one or more workspaces: HTTP %s", exc.code)
+        return 1
+
+    log.info("Found %d total items across listed workspaces.", len(items))
+
+    # ------------------------------------------------------------------ #
+    # 3. Classify items                                                    #
+    # ------------------------------------------------------------------ #
+    from .classify import classify
+
+    classification = classify(items, types_to_a)
+    a_count = sum(1 for v in classification.values() if v == "A")
+    b_count = sum(1 for v in classification.values() if v == "B")
+    log.info("Classification: %d → workspace A, %d → workspace B", a_count, b_count)
 
     # ------------------------------------------------------------------ #
     # 4. Build and write the plan report                                   #
@@ -273,7 +327,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
             try:
                 move_item(
                     item,
-                    source_workspace_id=args.source,
+                    source_workspace_id=(
+                        item.get("current_workspace_id")
+                        or item.get("workspaceId")
+                        or args.source
+                    ),
                     target_workspace_id=row.target_workspace_id,
                     token=token,
                     audit_fh=audit_fh,
@@ -305,13 +363,17 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
     if any_to_rewrite:
         log.info("Running reference-rewrite pass …")
         for row in plan:
+            # Leave rows are already at their target workspace and do not need
+            # post-move reference rewriting.
+            if row.action != "move":
+                continue
             item = next((i for i in items if i.get("id") == row.item_id), None)
             if item is None:
                 continue
             item_type = item.get("type") or item.get("itemType") or ""
             if item_type not in REWRITE_CANDIDATES:
                 continue
-            ws_id = row.target_workspace_id if row.action == "move" else args.source
+            ws_id = row.target_workspace_id
             # Replace mentions of the source workspace ID with this item's
             # current (post-move) workspace ID.
             item_id_map = {args.source: ws_id}
