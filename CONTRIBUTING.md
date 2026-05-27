@@ -21,6 +21,135 @@ This monorepo ships **four independent wheels** that move together:
 
 ---
 
+## Proposing a change (fork-based workflow)
+
+External contributors **must work from a fork** — only repository
+maintainers can push directly to `timarif/FabricHelpers`. This keeps the
+release pipeline on `main` predictable and lets every change be reviewed.
+
+### 1. Fork the repository
+
+Click **Fork** in the top-right of <https://github.com/timarif/FabricHelpers>,
+or via the GitHub CLI:
+
+```bash
+gh repo fork timarif/FabricHelpers --clone --remote
+cd FabricHelpers
+```
+
+`--remote` configures two remotes for you:
+
+- `origin` → your fork (where you push branches)
+- `upstream` → `timarif/FabricHelpers` (where you pull updates from)
+
+If you cloned manually instead, wire it up by hand:
+
+```bash
+git clone https://github.com/<your-username>/FabricHelpers.git
+cd FabricHelpers
+git remote add upstream https://github.com/timarif/FabricHelpers.git
+```
+
+### 2. Create a feature branch off an up-to-date `main`
+
+Never commit directly to your fork's `main` — keep it as a clean mirror
+of upstream so it's easy to rebase and so PRs are diffed cleanly.
+
+```bash
+git fetch upstream
+git switch main
+git rebase upstream/main
+git push origin main           # keep your fork's main in sync
+
+git switch -c <scope>/<short-description>
+```
+
+Branch name convention: `<scope>/<kebab-case-description>`, where `<scope>`
+is one of `core`, `scanner`, `downloader`, `splitter`, `mpe`, `reporting`,
+`repo`, `ci`, `docs`. Examples:
+
+- `scanner/handle-404-from-admin-items`
+- `core/add-onelake-uri-helper`
+- `ci/cache-pip-by-pyproject`
+
+### 3. Make your change, then test the package(s) you touched
+
+Install dependencies once (see [Local development](#local-development)
+below), then run the **unit suite for every package your change affects**:
+
+```bash
+cd <pkg>Helper && pytest tests/unit -q
+```
+
+If you touched `fabric-core`, run all four downstream suites — the change
+must not break any consumer. CI will block the PR otherwise.
+
+If you touched a notebook cell template (`<pkg>Helper/scripts/build_notebook.py`),
+regenerate the bound notebook and commit the result:
+
+```bash
+cd <pkg>Helper && python scripts/build_notebook.py
+git add notebooks/
+```
+
+### 4. Push to your fork and open a pull request
+
+```bash
+git push -u origin <scope>/<short-description>
+gh pr create \
+    --repo timarif/FabricHelpers \
+    --base main \
+    --head <your-username>:<scope>/<short-description> \
+    --title "<scope>: <short description> (closes #<issue>)" \
+    --body  "Closes #<issue>. <one-paragraph summary + what you ran.>"
+```
+
+PR requirements:
+
+- **One concern per PR.** Refactors that aren't required by the issue go
+  in a follow-up PR.
+- **Link the issue with `Closes #N`** in the PR body. This auto-closes
+  the issue when the PR merges.
+- **Include a "what I ran / what passed" block** in the PR body. At
+  minimum: `pytest tests/unit -q` for every package you touched.
+- **No bumps to `_version.py` or `[project] version`** — releases handle
+  those (see [Tag and release scheme](#tag-and-release-scheme)).
+- **No new top-level dependencies** without prior agreement in the issue.
+
+### 5. Iterate on review feedback
+
+```bash
+# work on the same branch, push fixups
+git commit --fixup HEAD
+git push origin <scope>/<short-description>
+
+# when review is done, rebase + squash before merging
+git rebase -i --autosquash upstream/main
+git push --force-with-lease origin <scope>/<short-description>
+```
+
+Use **"Squash and merge"** in the PR UI so each PR lands as one commit
+on `main` — this keeps the path-filtered release detection
+(`.github/workflows/main.yml`) clean.
+
+### 6. After merge: delete the branch, sync your fork
+
+```bash
+gh pr close <pr-number> --delete-branch    # if not auto-deleted
+git switch main
+git fetch upstream
+git rebase upstream/main
+git push origin main
+```
+
+> **Maintainers note**: a small number of repository maintainers can
+> push directly to `main` (e.g. release-pipeline housekeeping, doc
+> typos). When you do, include `[skip release]` in the commit message
+> if the change doesn't touch any package under `*Helper/` — it short-
+> circuits the release detection job in `main.yml`.
+
+---
+
 ## Dependency direction (enforced by tests)
 
 - `fabric-core` MUST NOT import from `fabric-scanner`, `fabric-downloader`, or `fabric-splitter`.
