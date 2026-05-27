@@ -240,7 +240,7 @@ jobs:
             }' \
             --arg assignable "${ISSUE_ID}" \
             --argjson actors "${actor_ids_json}" \
-            '{query: $q, variables: {assignable: $assignable, actorIds: $actors}}' \
+            '{query: $q, variables: {assignable: $assignable, actors: $actors}}' \
           | gh api graphql --input -
 
           echo "✅ Copilot assigned to issue #${{ steps.issue.outputs.number }}"
