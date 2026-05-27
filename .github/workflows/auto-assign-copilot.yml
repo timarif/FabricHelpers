@@ -70,59 +70,64 @@ jobs:
         run: |
           set -euo pipefail
 
+          skip="true"
+          reason="default-no-match"
+
           # Never act on pull requests (issue_comment fires on both).
           if [ "${IS_PR}" = "true" ]; then
-            echo "skip=true reason=is-pull-request" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
+            reason="is-pull-request"
           # Never act on closed issues.
-          if [ "${ISSUE_STATE}" = "closed" ]; then
-            echo "skip=true reason=issue-closed" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
+          elif [ "${ISSUE_STATE}" = "closed" ]; then
+            reason="issue-closed"
           # Hard block: `agent-no` label always wins.
-          if echo "${ISSUE_LABELS}" | grep -qiE '"agent-no"'; then
-            echo "skip=true reason=agent-no-label" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          case "${EVENT}" in
-            issues)
-              # Only fire for the `agent-ok` label being added (or `opened` /
-              # `reopened` if you've enabled those triggers above).
-              if [ "${ACTION}" = "labeled" ] && [ "${LABEL_NAME}" = "agent-ok" ]; then
-                echo "skip=false reason=agent-ok-label-added" >> "$GITHUB_OUTPUT"
-              elif [ "${ACTION}" = "opened" ] || [ "${ACTION}" = "reopened" ]; then
-                # Opt-out mode (only reachable if you uncommented the trigger).
-                echo "skip=false reason=issue-${ACTION}" >> "$GITHUB_OUTPUT"
-              else
-                echo "skip=true reason=labeled-other-${LABEL_NAME}" >> "$GITHUB_OUTPUT"
-              fi
-              ;;
-            issue_comment)
-              # /assign-copilot from a write+ collaborator.
-              if ! echo "${COMMENT_BODY}" | grep -qE '^/assign-copilot[[:space:]]*$'; then
-                echo "skip=true reason=no-command" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
+          elif echo "${ISSUE_LABELS}" | grep -qiE '"agent-no"'; then
+            reason="agent-no-label"
+          elif [ "${EVENT}" = "issues" ]; then
+            case "${ACTION}" in
+              labeled)
+                if [ "${LABEL_NAME}" = "agent-ok" ]; then
+                  skip="false"; reason="agent-ok-label-added"
+                else
+                  reason="labeled-other-${LABEL_NAME}"
+                fi
+                ;;
+              # Opt-out mode (only reachable if you uncommented opened/reopened above).
+              opened|reopened)
+                skip="false"; reason="issue-${ACTION}"
+                ;;
+              *)
+                reason="action-other-${ACTION}"
+                ;;
+            esac
+          elif [ "${EVENT}" = "issue_comment" ]; then
+            if echo "${COMMENT_BODY}" | grep -qE '^/assign-copilot[[:space:]]*$'; then
               case "${COMMENT_AUTHOR_ASSOC}" in
                 OWNER|MEMBER|COLLABORATOR|CONTRIBUTOR)
-                  echo "skip=false reason=slash-command" >> "$GITHUB_OUTPUT"
+                  skip="false"; reason="slash-command"
                   ;;
                 *)
-                  echo "skip=true reason=insufficient-permissions:${COMMENT_AUTHOR_ASSOC}" >> "$GITHUB_OUTPUT"
+                  reason="insufficient-permissions:${COMMENT_AUTHOR_ASSOC}"
                   ;;
               esac
-              ;;
-            workflow_dispatch)
-              echo "skip=false reason=manual-dispatch" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "skip=true reason=unknown-event:${EVENT}" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
+            else
+              reason="no-command"
+            fi
+          elif [ "${EVENT}" = "workflow_dispatch" ]; then
+            skip="false"; reason="manual-dispatch"
+          else
+            reason="unknown-event:${EVENT}"
+          fi
+
+          # Visible in run logs as a notice annotation.
+          echo "::notice::Gate decision: skip=${skip} reason=${reason} (event=${EVENT} action=${ACTION} label=${LABEL_NAME})"
+
+          # IMPORTANT: each output goes on its OWN line. Don't combine
+          # `skip=... reason=...` into a single echo — GH Actions would
+          # treat the entire RHS as the value of `skip`.
+          {
+            echo "skip=${skip}"
+            echo "reason=${reason}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Resolve issue number
         if: steps.gate.outputs.skip == 'false'
