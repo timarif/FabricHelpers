@@ -1,0 +1,97 @@
+# copilot-setup-steps.yml
+#
+# Read by GitHub Copilot's coding agent when an issue is assigned to @copilot.
+# The single `copilot-setup-steps` job runs BEFORE the agent boots its sandbox,
+# so the agent starts with the toolchain + all editable installs already done.
+# This avoids burning the agent's first 5+ turns figuring out the build.
+#
+# Reference: https://docs.github.com/copilot/concepts/agents/copilot-coding-agent
+#
+# Keep this file in sync with the local-dev block in CONTRIBUTING.md and the
+# CI matrix in .github/workflows/ci.yml — any time those install commands
+# change, mirror them here.
+
+name: copilot setup
+
+on:
+  workflow_dispatch:   # so a human can sanity-check the setup locally
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Terraform (for mpeHelper/terraform/)
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.5"
+
+      - name: Upgrade pip + install build helpers
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade build hatch nbformat pytest pytest-cov
+
+      # The four wheels MUST be installed in dependency order: core first so
+      # the consumers' "fabric-core>=0.1" requirement resolves to the local
+      # editable build rather than reaching out to PyPI.
+      - name: Install fabric-core (editable, with dev/api/notebook extras)
+        working-directory: coreHelper
+        run: pip install -e ".[dev,api,notebook]"
+
+      - name: Install fabric-scanner (editable, with dev/api/spark extras)
+        working-directory: scannerHelper
+        run: pip install -e ".[dev,api,spark]"
+
+      - name: Install fabric-downloader (editable, with dev/api/spark extras)
+        working-directory: downloaderHelper
+        run: pip install -e ".[dev,api,spark]"
+
+      - name: Install fabric-splitter (editable, with dev extras)
+        working-directory: splitterHelper
+        run: pip install -e ".[dev]"
+
+      # Pre-build the test fixtures that fabric-scanner's conftest auto-builds
+      # on first run — doing it here means the agent's first `pytest` doesn't
+      # surprise-execute a subprocess.
+      - name: Pre-build scanner test fixtures
+        working-directory: scannerHelper
+        run: |
+          if [ -f tests/fixtures/build_fixtures.py ]; then
+            python tests/fixtures/build_fixtures.py
+          fi
+
+      # Verify every wheel imports cleanly before handing off to the agent,
+      # so a misconfigured environment surfaces here instead of mid-task.
+      - name: Smoke-test imports
+        run: |
+          python - <<'PY'
+          import importlib, sys
+          for mod in ("fabric_core", "fabric_scanner", "fabric_downloader",
+                      "fabric_splitter"):
+              m = importlib.import_module(mod)
+              print(f"  {mod:20s}  {getattr(m, '__version__', '(no version)')}")
+          PY
+
+      # Run every wheel's fast unit suite as a final environment check.
+      # The agent will re-run targeted tests for the files it touches; this
+      # establishes a known-green baseline so any failure is real.
+      - name: Baseline unit tests (fast suites only)
+        run: |
+          set -e
+          for pkg in coreHelper scannerHelper downloaderHelper splitterHelper; do
+            echo "::group::pytest $pkg/tests/unit"
+            (cd "$pkg" && pytest tests/unit -q)
+            echo "::endgroup::"
+          done
