@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [core, scanner, downloader, splitter]
+        package: [core, scanner, downloader, splitter, tenant]
     uses: ./.github/workflows/build.yml
     with:
       package: ${{ matrix.package }}
