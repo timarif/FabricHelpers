@@ -1,0 +1,29 @@
+# Fabric Custom Environment — environment manifest
+#
+# Documents the libraries this environment supplies. Custom JAR libraries
+# cannot be declared inline in YAML — they must be uploaded via the workspace
+# UI ("Custom libraries") or via the Fabric Environments REST API.
+#
+# This file exists so the JAR dependency is checked into source control and
+# reviewable in code review even though the binary itself lives outside the repo.
+
+environment:
+  name: kusto-streaming-env
+  description: |
+    Fixes Microsoft's packaging defect in the bundled kusto-spark 7.0.4 connector
+    on Fabric Spark runtimes 1.2 and 1.3, which prevents writeMode=KustoStreaming
+    from working. Ships a small shim JAR (~531 KB) supplying the missing shaded
+    commons-io classes. See ./README.md for background.
+
+# Custom JAR libraries to upload to "Custom libraries" in the UI.
+custom_libraries:
+  - name:    kusto-commons-io-shim-1.0.0.jar
+    version: 1.0.0
+    sha256:  # (fill in when shipping a reproducible release)
+    source:  built from commons-io 2.16.1 via maven-shade-plugin (see ../README.md → "Building the shim from scratch")
+    purpose: |
+      Supplies kusto_connector_shaded.org.apache.commons.io.* classes that
+      Microsoft's bundled kusto-spark 7.0.4 references but doesn't bundle.
+
+# Public (PyPI) Python libraries — none required for this environment.
+public_libraries: []

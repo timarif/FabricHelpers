@@ -1,0 +1,292 @@
+# auto-assign-copilot.yml
+#
+# Automatically assigns GitHub Copilot's cloud agent (the bot named
+# `copilot-swe-agent`) as the assignee on issues. Once Copilot is assigned,
+# it picks the issue up the same way it would after a manual assignment,
+# reads AGENTS.md + .github/copilot-instructions.md, runs the
+# copilot-setup-steps.yml setup job, and drafts a PR.
+#
+# ── Trigger modes ────────────────────────────────────────────────────────────
+# This workflow fires whenever any of these is true:
+#   1. An issue is labelled `agent-ok` (default safe mode — opt-in per issue).
+#   2. A maintainer comments `/assign-copilot` on an issue.
+#   3. Manually via Actions → "auto-assign copilot" → Run workflow.
+#
+# To make it fire on EVERY new issue automatically (opt-out model), uncomment
+# the `opened` filter under `on.issues.types` AND keep the agent-no guard at
+# the top of the `gate` step. With the templates set to add `agent-ok` by
+# default (see ISSUE_TEMPLATE/*.yml), every new template-based issue already
+# triggers via path 1.
+#
+# ── Permissions ──────────────────────────────────────────────────────────────
+# Needs `issues: write` to mutate assignees. The Copilot bot is a Bot actor,
+# not a User, so it can't be assigned via the REST /assignees endpoint or via
+# `addAssigneesToAssignable` (User-only). We use the GraphQL
+# `replaceActorsForAssignable` mutation, which accepts both Users and Bots.
+#
+# ── REQUIRED secret: COPILOT_ASSIGN_TOKEN ────────────────────────────────────
+# `replaceActorsForAssignable` REJECTS GitHub App installation tokens (the
+# default `secrets.GITHUB_TOKEN`) when the target actor is a Bot. The API
+# returns:
+#   "Assigning agents is not supported with GitHub App installation tokens.
+#    Use a user token (personal access token or OAuth token) instead."
+#
+# So this workflow requires a **fine-grained personal access token** stored
+# as the repo secret `COPILOT_ASSIGN_TOKEN`. To create it:
+#
+#   1. Go to https://github.com/settings/personal-access-tokens/new
+#   2. Resource owner:      your user (or the org owning this repo)
+#   3. Repository access:   "Only select repositories" → pick FabricHelpers
+#   4. Permissions → Repository → Issues:  Read and write
+#   5. Permissions → Repository → Metadata: Read (auto-required)
+#   6. Expiration:          90 days (or what your org policy permits)
+#   7. Generate, copy the token, then in the repo:
+#        Settings → Secrets and variables → Actions → New repository secret
+#        Name:  COPILOT_ASSIGN_TOKEN
+#        Value: <paste PAT>
+#
+# Classic PATs with `repo` scope also work but are not recommended.
+
+name: auto-assign copilot
+
+on:
+  issues:
+    types:
+      - labeled
+      # - opened       # uncomment for opt-out mode (all new issues auto-assign)
+      # - reopened
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to assign Copilot to"
+        required: true
+        type: number
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: auto-assign-copilot-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  assign:
+    name: assign copilot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Decide whether to assign
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          ISSUE_LABELS: ${{ toJSON(github.event.issue.labels.*.name) }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_AUTHOR_ASSOC: ${{ github.event.comment.author_association }}
+          ISSUE_STATE: ${{ github.event.issue.state }}
+          IS_PR: ${{ github.event.issue.pull_request != null }}
+        run: |
+          set -euo pipefail
+
+          skip="true"
+          reason="default-no-match"
+
+          # Never act on pull requests (issue_comment fires on both).
+          if [ "${IS_PR}" = "true" ]; then
+            reason="is-pull-request"
+          # Never act on closed issues.
+          elif [ "${ISSUE_STATE}" = "closed" ]; then
+            reason="issue-closed"
+          # Hard block: `agent-no` label always wins.
+          elif echo "${ISSUE_LABELS}" | grep -qiE '"agent-no"'; then
+            reason="agent-no-label"
+          elif [ "${EVENT}" = "issues" ]; then
+            case "${ACTION}" in
+              labeled)
+                if [ "${LABEL_NAME}" = "agent-ok" ]; then
+                  skip="false"; reason="agent-ok-label-added"
+                else
+                  reason="labeled-other-${LABEL_NAME}"
+                fi
+                ;;
+              # Opt-out mode (only reachable if you uncommented opened/reopened above).
+              opened|reopened)
+                skip="false"; reason="issue-${ACTION}"
+                ;;
+              *)
+                reason="action-other-${ACTION}"
+                ;;
+            esac
+          elif [ "${EVENT}" = "issue_comment" ]; then
+            if echo "${COMMENT_BODY}" | grep -qE '^/assign-copilot[[:space:]]*$'; then
+              case "${COMMENT_AUTHOR_ASSOC}" in
+                OWNER|MEMBER|COLLABORATOR|CONTRIBUTOR)
+                  skip="false"; reason="slash-command"
+                  ;;
+                *)
+                  reason="insufficient-permissions:${COMMENT_AUTHOR_ASSOC}"
+                  ;;
+              esac
+            else
+              reason="no-command"
+            fi
+          elif [ "${EVENT}" = "workflow_dispatch" ]; then
+            skip="false"; reason="manual-dispatch"
+          else
+            reason="unknown-event:${EVENT}"
+          fi
+
+          # Visible in run logs as a notice annotation.
+          echo "::notice::Gate decision: skip=${skip} reason=${reason} (event=${EVENT} action=${ACTION} label=${LABEL_NAME})"
+
+          # IMPORTANT: each output goes on its OWN line. Don't combine
+          # `skip=... reason=...` into a single echo — GH Actions would
+          # treat the entire RHS as the value of `skip`.
+          {
+            echo "skip=${skip}"
+            echo "reason=${reason}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve issue number
+        if: steps.gate.outputs.skip == 'false'
+        id: issue
+        env:
+          EVENT_ISSUE: ${{ github.event.issue.number }}
+          INPUT_ISSUE: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+          n="${EVENT_ISSUE:-${INPUT_ISSUE}}"
+          if [ -z "${n}" ]; then
+            echo "::error::could not determine issue number"
+            exit 1
+          fi
+          echo "number=${n}" >> "$GITHUB_OUTPUT"
+
+      - name: Look up Copilot bot + current assignees
+        if: steps.gate.outputs.skip == 'false'
+        id: ids
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+        run: |
+          set -euo pipefail
+
+          # 1. Get the Copilot bot's GraphQL actor ID. The bot only appears in
+          #    suggestedActors if Copilot cloud agent is enabled for this
+          #    repo at the account / org level.
+          payload=$(gh api graphql -f query='
+            query($owner: String!, $name: String!, $issue: Int!) {
+              repository(owner: $owner, name: $name) {
+                suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
+                  nodes {
+                    __typename
+                    ... on Bot  { id login }
+                    ... on User { id login }
+                  }
+                }
+                issue(number: $issue) {
+                  id
+                  assignees(first: 20) { nodes { id login } }
+                }
+              }
+            }' -F owner="${OWNER}" -F name="${REPO_NAME}" -F issue="${ISSUE_NUMBER}")
+
+          bot_id=$(echo "${payload}" | jq -r '
+            .data.repository.suggestedActors.nodes[]
+            | select(.__typename == "Bot" and (.login | ascii_downcase | test("copilot")))
+            | .id' | head -n1)
+
+          if [ -z "${bot_id}" ] || [ "${bot_id}" = "null" ]; then
+            echo "::error::Copilot bot is not in suggestedActors for this repo."
+            echo "::error::Enable Copilot cloud agent: https://github.com/settings/copilot/coding_agent"
+            exit 1
+          fi
+
+          issue_id=$(echo "${payload}" | jq -r '.data.repository.issue.id')
+          existing_ids=$(echo "${payload}" | jq -r '
+            [.data.repository.issue.assignees.nodes[].id] | join(",")')
+
+          echo "bot_id=${bot_id}"     >> "$GITHUB_OUTPUT"
+          echo "issue_id=${issue_id}" >> "$GITHUB_OUTPUT"
+          echo "existing_ids=${existing_ids}" >> "$GITHUB_OUTPUT"
+
+      - name: Assign Copilot (preserving existing assignees)
+        if: steps.gate.outputs.skip == 'false'
+        env:
+          # MUST be a user PAT — GitHub App tokens (the default GITHUB_TOKEN)
+          # cannot assign Bot actors like Copilot. See the file header for the
+          # required PAT scopes.
+          GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          ISSUE_ID: ${{ steps.ids.outputs.issue_id }}
+          BOT_ID: ${{ steps.ids.outputs.bot_id }}
+          EXISTING_IDS: ${{ steps.ids.outputs.existing_ids }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::Repo secret COPILOT_ASSIGN_TOKEN is not set."
+            echo "::error::Create a fine-grained PAT with Issues: Read+write and"
+            echo "::error::store it as COPILOT_ASSIGN_TOKEN. See workflow file header."
+            exit 1
+          fi
+
+          # If Copilot is already in the assignee list, no-op.
+          if echo ",${EXISTING_IDS}," | grep -q ",${BOT_ID},"; then
+            echo "Copilot is already assigned."
+            exit 0
+          fi
+
+          # Build the actorIds JSON array: existing assignees + Copilot.
+          # `-n` (null input) is essential — without it, jq waits for stdin,
+          # gets /dev/null in GH Actions, and produces an empty string,
+          # which then breaks --argjson below with "invalid JSON text".
+          actor_ids_json=$(jq -nc \
+            --arg bot "${BOT_ID}" \
+            --arg existing "${EXISTING_IDS}" \
+            '($existing | split(",") | map(select(length > 0))) + [$bot] | unique')
+          echo "actorIds payload: ${actor_ids_json}"
+
+          # Build the full GraphQL request body. `gh api graphql -F`/`-f` only
+          # support scalar values — for the [ID!]! actors array we need to
+          # POST a full {query, variables} body with proper typed JSON, so we
+          # construct it with jq --argjson and pipe via --input -.
+          jq -nc \
+            --arg q 'mutation($assignable: ID!, $actors: [ID!]!) {
+              replaceActorsForAssignable(input: {
+                assignableId: $assignable,
+                actorIds: $actors
+              }) {
+                assignable {
+                  ... on Issue {
+                    number
+                    assignees(first: 20) { nodes { login } }
+                  }
+                }
+              }
+            }' \
+            --arg assignable "${ISSUE_ID}" \
+            --argjson actors "${actor_ids_json}" \
+            '{query: $q, variables: {assignable: $assignable, actors: $actors}}' \
+          | gh api graphql --input -
+
+          echo "✅ Copilot assigned to issue #${{ steps.issue.outputs.number }}"
+
+      - name: Drop a confirmation comment
+        if: steps.gate.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          REASON: ${{ steps.gate.outputs.reason }}
+        run: |
+          gh issue comment "${ISSUE_NUMBER}" \
+            --repo "${{ github.repository }}" \
+            --body "🤖 Assigned **@copilot** to this issue (trigger: \`${REASON}\`).
+
+          The agent will follow the contract in [AGENTS.md](../blob/main/AGENTS.md) and open a **draft** PR when it's ready. Add the \`agent-no\` label and unassign Copilot to stop it."

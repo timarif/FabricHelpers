@@ -1,7 +1,7 @@
 name: ✨ Feature request
 description: Propose a new helper, or an enhancement to an existing one.
 title: "[Feature]: "
-labels: ["enhancement"]
+labels: ["enhancement", "agent-ok"]
 body:
   - type: markdown
     attributes:
