@@ -1,0 +1,90 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name            = "fabric-tenant"
+dynamic         = ["version"]
+description     = "Compare admin tenant settings across two physically different Microsoft Fabric tenants — multi-profile auth, deterministic snapshots, risk-tiered diff."
+readme          = "README.md"
+requires-python = ">=3.10"
+license         = { text = "MIT" }
+authors         = [{ name = "Tim Arif" }]
+keywords        = ["fabric", "microsoft", "tenant", "settings", "admin", "compare", "diff", "governance"]
+classifiers     = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    # Shared low-level helpers (paths, diagnostics, build_notebook).
+    "fabric-core>=0.1,<1.0",
+    # Multi-tenant token acquisition (explicit authority per call, device-code flow).
+    "msal>=1.28",
+    # Profile YAML loader.
+    "PyYAML>=6.0",
+    # HTTP client for the admin REST endpoints (sync; the tenant settings API
+    # is one call per tenant — async fan-out not needed).
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+reporting = [
+    # Opt-in: write fact_tenant_settings_diff rows via fabric-reporting adapter.
+    "fabric-reporting>=0.1,<1.0",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.5",
+    "build>=1.0",
+    "hatch>=1.9",
+    "responses>=0.25",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+fabric-tenant = "fabric_tenant.cli:main"
+
+[project.urls]
+Homepage   = "https://github.com/timarif/FabricHelpers"
+Repository = "https://github.com/timarif/FabricHelpers"
+Issues     = "https://github.com/timarif/FabricHelpers/issues"
+
+[tool.hatch.version]
+path = "src/fabric_tenant/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fabric_tenant"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/fabric_tenant",
+    "tests",
+    "README.md",
+    "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths       = ["tests"]
+addopts         = "-ra -q --strict-markers"
+markers         = [
+    "integration: requires live Fabric admin API access (slow, two tenants)",
+]
+filterwarnings  = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length    = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]  # let formatter handle long lines
