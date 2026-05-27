@@ -1,0 +1,33 @@
+# Fabric Custom Environment — Spark compute config
+#
+# This file documents the Spark properties to set on a Fabric Custom Environment
+# that supplies the kusto-commons-io shim JAR. It is the YAML equivalent of the
+# settings shown in the workspace UI under:
+#   Environment → Spark compute → Spark properties
+#
+# Two ways to apply:
+#   1. UI:  copy each property into the workspace UI form fields.
+#   2. API: POST this file's `spark_conf` block to the Fabric Environments API
+#           (see ./README.md for a sample `az rest` call).
+#
+# Note: the JAR file itself cannot be specified here — it must be uploaded
+# separately under "Custom libraries". See ./README.md for upload instructions.
+
+# Pick whichever runtime your workspace uses. Both 1.2 and 1.3 ship
+# the broken kusto-spark 7.0.4 and therefore both need the shim.
+runtime_version: '1.3'
+
+spark_conf:
+  # Force the user-supplied shim JAR to win the class load for
+  # kusto_connector_shaded.org.apache.commons.io.* — supplies the classes
+  # that Microsoft's bundled kusto-spark 7.0.4 references but doesn't bundle.
+  spark.driver.userClassPathFirst:   'true'
+  spark.executor.userClassPathFirst: 'true'
+
+# Optional pool sizing (uncomment + tune if your workspace requires explicit values).
+# instance_pool:
+#   node_size:         'Small'    # Small | Medium | Large | XLarge | XXLarge
+#   driver_node_size:  'Small'
+#   min_executors:      1
+#   max_executors:      4
+#   dynamic_executor_allocation: true
