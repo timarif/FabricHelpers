@@ -54,6 +54,27 @@ def test_build_plan_action_is_leave_when_target_equals_source():
     assert by_id["rpt1"].action == "move"
 
 
+def test_build_plan_action_uses_current_workspace_id():
+    items = [
+        {
+            "id": "nb1",
+            "type": "Notebook",
+            "displayName": "My Notebook",
+            "current_workspace_id": _WS_A,
+        },
+        {
+            "id": "rpt1",
+            "type": "Report",
+            "displayName": "My Report",
+            "current_workspace_id": _SRC,
+        },
+    ]
+    plan = build_plan(items, {"nb1": "A", "rpt1": "B"}, _WS_A, _WS_B, _SRC)
+    by_id = {row.item_id: row for row in plan}
+    assert by_id["nb1"].action == "leave"
+    assert by_id["rpt1"].action == "move"
+
+
 def test_build_plan_sets_target_workspace_id_correctly():
     plan = build_plan(_ITEMS, _classification(), _WS_A, _WS_B, _SRC)
     by_id = {row.item_id: row for row in plan}

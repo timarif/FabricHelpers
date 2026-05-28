@@ -15,6 +15,7 @@ from unittest import mock
 import pytest
 
 from fabric_splitter.classify import classify
+from fabric_splitter.cli import main as cli_main
 from fabric_splitter.move import move_item
 from fabric_splitter.plan import build_plan, write_plan
 from fabric_splitter.rewrite import rewrite_references
@@ -246,31 +247,145 @@ def test_rewrite_patches_semantic_model_workspace_ref(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_idempotency_second_run_no_mutations(monkeypatch, tmp_path):
-    """Simulate a second run where all items are already in the right workspaces.
-
-    With all items already in workspace A or B (none in the source), every
-    item's target equals its current location → action='leave' → zero moves.
-    """
-    # Items already live in the target workspaces (not in source)
-    items_already_moved = [
-        {"id": "nb1", "type": "Notebook", "displayName": "NB 1", "workspaceId": WS_A},
-        {"id": "sm1", "type": "SemanticModel", "displayName": "SM 1", "workspaceId": WS_B},
+def test_idempotent_rerun_actually_zero_mutations(monkeypatch, tmp_path):
+    """Two consecutive runs with identical inputs: run 2 makes zero mutations."""
+    num_items_per_type = 5
+    expected_total_items = num_items_per_type * 2
+    initial_items = [
+        {"id": f"nb{i}", "type": "Notebook", "displayName": f"Notebook {i}"}
+        for i in range(1, num_items_per_type + 1)
+    ] + [
+        {"id": f"lh{i}", "type": "Lakehouse", "displayName": f"Lakehouse {i}"}
+        for i in range(1, num_items_per_type + 1)
     ]
-    # Use WS_A as source (so nb1's target == source == WS_A → leave)
-    # and WS_B for sm1 similarly
-    # We test with a simpler scenario: source = WS_A, A-types go to WS_A.
-    classification = classify(items_already_moved, {"notebook"})
-    # workspace_a_id == SOURCE_WS (same workspace)
-    plan = build_plan(items_already_moved, classification, WS_A, WS_B, WS_A)
-    nb_row = next(r for r in plan if r.item_id == "nb1")
-    assert nb_row.action == "leave"
+    items_by_workspace = {
+        SOURCE_WS: [dict(item) for item in initial_items],
+        WS_A: [],
+        WS_B: [],
+    }
 
-    # Write the plan and confirm zero "move" rows
-    csv_path, _ = write_plan(plan, tmp_path)
-    with csv_path.open(newline="", encoding="utf-8") as fh:
+    listed_workspaces: list[str] = []
+    mutation_calls: list[tuple[str, str]] = []
+
+    def fake_list_workspace_items(workspace_id, token, fabric_base):
+        listed_workspaces.append(workspace_id)
+        return [
+            {**item, "workspaceId": workspace_id}
+            for item in items_by_workspace.get(workspace_id, [])
+        ]
+
+    def fake_workspaces_paged_get(url, token):
+        if url.endswith("/v1/workspaces"):
+            return [
+                {"id": SOURCE_WS, "displayName": "Source"},
+                {"id": WS_A, "displayName": "Engineering"},
+                {"id": WS_B, "displayName": "Consumption"},
+            ]
+        if "/roleAssignments" in url:
+            return []
+        raise AssertionError(f"Unexpected paged_get URL: {url}")
+
+    def fake_workspaces_request(method, url, token, body=None, **kw):
+        raise AssertionError(f"Unexpected workspace mutation request: {method} {url}")
+
+    def fake_move_request(method, url, token, body=None, **kw):
+        if method in {"POST", "PATCH", "DELETE"} and "getDefinition" not in url:
+            mutation_calls.append((method, url))
+        if "getDefinition" in url:
+            return {"definition": {"parts": []}}
+        if method == "POST" and "/items" in url:
+            target_workspace_id = url.split("/workspaces/")[1].split("/")[0]
+            display_name = (body or {}).get("displayName")
+            item_type = (body or {}).get("type")
+            source_and_item = next(
+                (
+                    (ws_id, item)
+                    for ws_id, workspace_items in items_by_workspace.items()
+                    for item in workspace_items
+                    if item.get("displayName") == display_name and item.get("type") == item_type
+                ),
+                None,
+            )
+            if source_and_item is None:
+                available = {
+                    ws_id: [
+                        (item.get("displayName"), item.get("type"))
+                        for item in workspace_items
+                    ]
+                    for ws_id, workspace_items in items_by_workspace.items()
+                }
+                pytest.fail(
+                    f"Missing source item for {display_name}/{item_type}; "
+                    f"available items: {available}"
+                )
+            source_workspace_id, source_item = source_and_item
+            items_by_workspace[source_workspace_id] = [
+                item
+                for item in items_by_workspace[source_workspace_id]
+                if item.get("id") != source_item.get("id")
+            ]
+            items_by_workspace[target_workspace_id].append(dict(source_item))
+            return {"id": source_item["id"]}
+        return {}
+
+    monkeypatch.setattr("fabric_splitter.cli._list_workspace_items", fake_list_workspace_items)
+    monkeypatch.setattr("fabric_splitter.workspaces.paged_get", fake_workspaces_paged_get)
+    monkeypatch.setattr("fabric_splitter.workspaces._request", fake_workspaces_request)
+    monkeypatch.setattr("fabric_splitter.move._request", fake_move_request)
+
+    run_1_out = tmp_path / "run1"
+    rc1 = cli_main(
+        [
+            "--source",
+            SOURCE_WS,
+            "--workspace-a-name",
+            "Engineering",
+            "--workspace-b-name",
+            "Consumption",
+            "--types-to-a",
+            "notebook",
+            "--apply",
+            "--skip-permissions",
+            "--token",
+            "test-token",
+            "--output-dir",
+            str(run_1_out),
+        ]
+    )
+    assert rc1 == 0
+    assert len(mutation_calls) == expected_total_items
+
+    listed_workspaces.clear()
+    mutation_calls.clear()
+
+    run_2_out = tmp_path / "run2"
+    rc2 = cli_main(
+        [
+            "--source",
+            SOURCE_WS,
+            "--workspace-a-name",
+            "Engineering",
+            "--workspace-b-name",
+            "Consumption",
+            "--types-to-a",
+            "notebook",
+            "--apply",
+            "--skip-permissions",
+            "--token",
+            "test-token",
+            "--output-dir",
+            str(run_2_out),
+        ]
+    )
+    assert rc2 == 0
+    assert set(listed_workspaces) == {SOURCE_WS, WS_A, WS_B}
+    assert mutation_calls == []
+
+    with (run_2_out / "splitter_report.csv").open(newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
-    move_rows = [r for r in rows if r["action"] == "move"]
-    # nb1 → leave (already in WS_A), sm1 → move (WS_B ≠ WS_A)
-    assert len(move_rows) == 1
-    assert move_rows[0]["itemId"] == "sm1"
+    assert len(rows) == expected_total_items
+    assert all(row["action"] == "leave" for row in rows)
+
+    run_2_audits = list(run_2_out.glob("splitter_audit_*.jsonl"))
+    assert len(run_2_audits) == 1
+    assert run_2_audits[0].read_text(encoding="utf-8") == ""

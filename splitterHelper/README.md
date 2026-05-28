@@ -151,6 +151,8 @@ evolves.
 
 Re-running with the same inputs is a no-op:
 
+- The CLI re-lists items from source + workspace A + workspace B.
+- Each item is compared by current workspace vs derived target workspace.
 - Items already in workspace A get `action=leave`.
 - Items already in workspace B get `action=leave`.
 - Zero API mutations are made.

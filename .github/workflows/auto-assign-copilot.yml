@@ -23,6 +23,29 @@
 # not a User, so it can't be assigned via the REST /assignees endpoint or via
 # `addAssigneesToAssignable` (User-only). We use the GraphQL
 # `replaceActorsForAssignable` mutation, which accepts both Users and Bots.
+#
+# ── REQUIRED secret: COPILOT_ASSIGN_TOKEN ────────────────────────────────────
+# `replaceActorsForAssignable` REJECTS GitHub App installation tokens (the
+# default `secrets.GITHUB_TOKEN`) when the target actor is a Bot. The API
+# returns:
+#   "Assigning agents is not supported with GitHub App installation tokens.
+#    Use a user token (personal access token or OAuth token) instead."
+#
+# So this workflow requires a **fine-grained personal access token** stored
+# as the repo secret `COPILOT_ASSIGN_TOKEN`. To create it:
+#
+#   1. Go to https://github.com/settings/personal-access-tokens/new
+#   2. Resource owner:      your user (or the org owning this repo)
+#   3. Repository access:   "Only select repositories" → pick FabricHelpers
+#   4. Permissions → Repository → Issues:  Read and write
+#   5. Permissions → Repository → Metadata: Read (auto-required)
+#   6. Expiration:          90 days (or what your org policy permits)
+#   7. Generate, copy the token, then in the repo:
+#        Settings → Secrets and variables → Actions → New repository secret
+#        Name:  COPILOT_ASSIGN_TOKEN
+#        Value: <paste PAT>
+#
+# Classic PATs with `repo` scope also work but are not recommended.
 
 name: auto-assign copilot
 
@@ -197,12 +220,22 @@ jobs:
       - name: Assign Copilot (preserving existing assignees)
         if: steps.gate.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # MUST be a user PAT — GitHub App tokens (the default GITHUB_TOKEN)
+          # cannot assign Bot actors like Copilot. See the file header for the
+          # required PAT scopes.
+          GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
           ISSUE_ID: ${{ steps.ids.outputs.issue_id }}
           BOT_ID: ${{ steps.ids.outputs.bot_id }}
           EXISTING_IDS: ${{ steps.ids.outputs.existing_ids }}
         run: |
           set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::Repo secret COPILOT_ASSIGN_TOKEN is not set."
+            echo "::error::Create a fine-grained PAT with Issues: Read+write and"
+            echo "::error::store it as COPILOT_ASSIGN_TOKEN. See workflow file header."
+            exit 1
+          fi
 
           # If Copilot is already in the assignee list, no-op.
           if echo ",${EXISTING_IDS}," | grep -q ",${BOT_ID},"; then
@@ -240,7 +273,7 @@ jobs:
             }' \
             --arg assignable "${ISSUE_ID}" \
             --argjson actors "${actor_ids_json}" \
-            '{query: $q, variables: {assignable: $assignable, actorIds: $actors}}' \
+            '{query: $q, variables: {assignable: $assignable, actors: $actors}}' \
           | gh api graphql --input -
 
           echo "✅ Copilot assigned to issue #${{ steps.issue.outputs.number }}"

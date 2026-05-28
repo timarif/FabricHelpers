@@ -65,6 +65,17 @@ Do not pick up an issue labelled `agent-no` or `needs-design`. If an issue
 has neither `agent-ok` nor `agent-no` and is in your scope, leave a comment
 asking for `agent-ok` instead of opening a PR.
 
+### Maintainer setup: `COPILOT_ASSIGN_TOKEN` (one-time)
+
+The `auto-assign-copilot.yml` workflow auto-assigns `@copilot` to issues that
+carry `agent-ok`. To work, it requires a repo secret named
+`COPILOT_ASSIGN_TOKEN` — a **fine-grained personal access token** scoped to
+this repo with `Issues: Read and write` permission. GitHub's default
+`GITHUB_TOKEN` (a GitHub App installation token) cannot assign Bot actors
+like Copilot. Without the PAT, the workflow fails fast with an explicit
+error pointing at the workflow file's header for setup steps:
+[`.github/workflows/auto-assign-copilot.yml`](.github/workflows/auto-assign-copilot.yml).
+
 ---
 
 ## Architectural invariants (CI will fail if you break these)

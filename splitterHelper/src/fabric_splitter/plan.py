@@ -62,7 +62,12 @@ def build_plan(
             continue
         target: Target = classification.get(item_id, "B")  # type: ignore[assignment]
         target_ws_id = workspace_a_id if target == "A" else workspace_b_id
-        action: Action = "leave" if target_ws_id == source_workspace_id else "move"
+        current_ws_id = (
+            item.get("current_workspace_id")
+            or item.get("workspaceId")
+            or source_workspace_id
+        )
+        action: Action = "leave" if target_ws_id == current_ws_id else "move"
         rows.append(
             PlanRow(
                 item_id=item_id,
