@@ -74,9 +74,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      - name: Install scanner integration deps
+        if: inputs.package == 'scanner'
+        working-directory: ${{ env.PKG_DIR }}
+        run: |
+          python -m pip install -e "../reportingHelper"
+          python -m pip install delta-spark
+
       - name: Run unit tests
         working-directory: ${{ env.PKG_DIR }}
         run: pytest tests/unit/ -q
+
+      - name: Run scanner integration tests
+        if: inputs.package == 'scanner'
+        working-directory: ${{ env.PKG_DIR }}
+        run: pytest tests/integration/test_reporting_e2e.py -q
 
       - name: Verify generated notebooks are in sync with build_notebook.py
         if: inputs.package != 'core' && inputs.package != 'splitter' && inputs.package != 'tenant'
