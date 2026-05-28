@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import KNOWN_ITEM_TYPES, DownloaderConfig
+from .handlers.lakehouse import fetch_lakehouse_tables
 from .item_types import REGISTRY
 from .api.enumerate import run_enumeration_sync
 
@@ -420,7 +421,13 @@ def _download_one(
         if handler_cls is None:
             base_row["error"] = f"No handler for metadata-only type {item_type!r}."
             return base_row
-        files = handler_cls().to_files(item, {})
+        tables_payload = fetch_lakehouse_tables(
+            workspace_id=ws_id,
+            lakehouse_id=item_id,
+            token=token,
+            fabric_base=fabric_base,
+        )
+        files = handler_cls().to_files(item, {"tables": tables_payload})
         return _write_files(item_dir, files, base_row, skip_existing,
                             include_raw, {})
 
