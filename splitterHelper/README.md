@@ -127,9 +127,9 @@ fabric-splitter \
 
 | Item type | References rewritten | What you must fix manually |
 |-----------|---------------------|---------------------------|
-| `SemanticModel` | `workspaceId` inside model definition parts (e.g. `model.bim`, PBISM) | Complex M-query / DirectQuery connection strings that embed workspace names as literals |
-| `Report` | `workspaceId` inside `definition.pbir` | Report-level RLS rules referencing users by name |
-| `DataPipeline` | `workspaceId` inside `pipeline-content.json` activity configs | External triggers, event-based triggers pointing at source workspace |
+| `SemanticModel` | `workspaceId` inside model definition parts (e.g. `model.bim`, PBISM), including cross-group links (A→B / B→A) via referenced item IDs | Complex M-query / DirectQuery connection strings that embed workspace names as literals |
+| `Report` | `workspaceId` inside `definition.pbir`, including cross-group links (A→B / B→A) via referenced item IDs | Report-level RLS rules referencing users by name |
+| `DataPipeline` | `workspaceId` inside `pipeline-content.json` activity configs, including cross-group links (A→B / B→A) via referenced item IDs | External triggers, event-based triggers pointing at source workspace |
 | All other types | *(none — pass-through)* | Any hard-coded workspace IDs embedded in notebook code cells |
 
 ---
