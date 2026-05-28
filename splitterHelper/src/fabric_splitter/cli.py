@@ -351,7 +351,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
     # Build a global routing map used by the rewriter's second pass.
     # For each planned item, route item_id -> post-split workspace_id.
     item_workspace_map: dict[str, str] = {}
+    ambiguous_item_ids: set[str] = set()
     for row in plan:
+        if row.item_id in ambiguous_item_ids:
+            continue
         existing = item_workspace_map.get(row.item_id)
         if existing and existing != row.target_workspace_id:
             log.warning(
@@ -361,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
                 row.target_workspace_id,
             )
             item_workspace_map.pop(row.item_id, None)
+            ambiguous_item_ids.add(row.item_id)
             continue
         item_workspace_map[row.item_id] = row.target_workspace_id
 
