@@ -348,13 +348,25 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
     # ------------------------------------------------------------------ #
     from .rewrite import rewrite_references, REWRITE_CANDIDATES
 
-    # Build per-item id_maps for the rewriter.
-    # When rewriting references within an item, any mention of the source
-    # workspace ID should be replaced with that item's own target workspace ID.
-    # This correctly handles same-group references (e.g. SemanticModel in B
-    # references a Lakehouse that also went to B).  Cross-group references
-    # (B item → A item that was previously in source) are documented as
-    # requiring manual correction in the README.
+    # Build a global routing map used by the rewriter's second pass.
+    # For each planned item, route item_id -> post-split workspace_id.
+    item_workspace_map: dict[str, str] = {}
+    for row in plan:
+        existing = item_workspace_map.get(row.item_id)
+        if existing and existing != row.target_workspace_id:
+            log.warning(
+                "Skipping ambiguous routing for item %s: %s vs %s",
+                row.item_id,
+                existing,
+                row.target_workspace_id,
+            )
+            item_workspace_map.pop(row.item_id, None)
+            continue
+        item_workspace_map[row.item_id] = row.target_workspace_id
+
+    # Build per-item id_maps for the rewriter's first pass.
+    # Any mention of the source workspace ID should be replaced with the
+    # rewriting item's own current (post-move) workspace ID.
     any_to_rewrite = any(
         row.action == "move" and row.target_workspace_id != args.source
         for row in plan
@@ -379,7 +391,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901  (complex but CLI 
             item_id_map = {args.source: ws_id}
             try:
                 changed = rewrite_references(
-                    item, ws_id, item_id_map, token, fabric_base=fabric_base
+                    item,
+                    ws_id,
+                    item_id_map,
+                    token,
+                    item_workspace_map,
+                    fabric_base=fabric_base,
                 )
                 if changed:
                     log.info("  Rewrote references in %s", row.item_id)
