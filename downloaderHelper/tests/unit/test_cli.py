@@ -221,6 +221,18 @@ class TestMainMockedIntegration:
                 )
             return {}
 
+        def fake_tables_fetch(*, workspace_id, lakehouse_id, token, fabric_base):
+            return {
+                "value": [
+                    {
+                        "name": "tbl1",
+                        "type": "Managed",
+                        "format": "Delta",
+                        "location": f"Tables/{lakehouse_id}",
+                    }
+                ]
+            }
+
         argv = [
             "--workspace-id", "ws-guid-0001",
             "--output", str(tmp_path / "out"),
@@ -235,6 +247,7 @@ class TestMainMockedIntegration:
         with (
             patch("fabric_downloader.cli.run_enumeration_sync", fake_run_enum),
             patch("fabric_downloader.cli._fetch_definition_sync", fake_fetch),
+            patch("fabric_downloader.cli.fetch_lakehouse_tables", fake_tables_fetch),
         ):
             return main(argv)
 
@@ -272,6 +285,12 @@ class TestMainMockedIntegration:
         out = tmp_path / "out" / "test-run"
         meta_files = list(out.rglob("lakehouse_metadata.json"))
         assert len(meta_files) >= 1
+
+    def test_lakehouse_tables_file_written(self, tmp_path):
+        self._run(tmp_path)
+        out = tmp_path / "out" / "test-run"
+        tables_files = list(out.rglob("tables.json"))
+        assert len(tables_files) >= 1
 
     def test_manifest_written_with_sha256(self, tmp_path):
         self._run(tmp_path)
@@ -320,6 +339,8 @@ class TestMainMockedIntegration:
                   if any(it["id"] == iid and it["type"] == "Notebook"
                          for it in _fake_items(["Notebook"]))
                   else _make_definition(("pipeline-content.json", '{}'))),
+            patch("fabric_downloader.cli.fetch_lakehouse_tables",
+                  lambda **_kw: {"value": []}),
         ):
             argv2 = [
                 "--workspace-id", "ws-guid-0001",
