@@ -4,7 +4,10 @@ The function the NotebookChain notebooks call.
 
 ## What it does
 
-`POST /api/HelloWorld` — echoes the JSON payload, adds a few computed fields, returns the function instance id (useful for load-test analysis):
+Two HTTP-triggered endpoints (function key auth) + a public health probe:
+
+### `POST /api/HelloWorld`
+Echoes the JSON payload, adds a few computed fields, returns the function instance id (useful for load-test analysis):
 
 ```json
 {
@@ -20,7 +23,43 @@ The function the NotebookChain notebooks call.
 }
 ```
 
-Also exposes `GET /api/health` (anonymous) for liveness probes.
+### `POST /api/GetRepoInfo`
+Calls the **GitHub REST API** and returns a curated subset of repo metadata. Demonstrates the *function-as-API-proxy* pattern used by `notebooks/05-fetch-data-via-function.ipynb`:
+
+Request:
+```json
+{ "owner": "Azure", "repo": "azure-kusto-spark" }
+```
+
+Response:
+```json
+{
+  "ok": true,
+  "name": "Azure/azure-kusto-spark",
+  "description": "Apache Spark Connector for Azure Kusto",
+  "stars": 248,
+  "forks": 113,
+  "language": "Scala",
+  "license": "Apache-2.0",
+  "topics": ["azure-kusto", "spark"],
+  "updated_at": "2026-05-27T...",
+  "rate_limit_remaining": "59",
+  "source": "github-api",
+  "fetched_at": "2026-05-28T..."
+}
+```
+
+Errors return `{"ok": false, "error": "..."}` with HTTP 400 (missing params) / 404 (repo not found) / 429 (rate limit) / 502 (upstream error).
+
+**Optional**: set `GITHUB_TOKEN` app setting to a PAT to raise the rate limit from 60/hr (anonymous) to 5,000/hr.
+
+```bash
+az functionapp config appsettings set -n $APP -g $RG \
+    --settings "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx"
+```
+
+### `GET /api/health`
+Anonymous liveness probe — handy for monitoring.
 
 ## Prerequisites
 

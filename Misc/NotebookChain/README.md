@@ -4,18 +4,20 @@ End-to-end sample showing how Fabric notebooks orchestrate calls to an HTTP-trig
 
 1. **Single call** — parent notebook → reusable child notebook → function (`01-` and `02-`)
 2. **Load-balanced fan-out** — orchestrator → 5 spoke notebooks in parallel → 5,000 function calls (`03-` and `04-loadgen-spoke-{A..E}`)
+3. **Function-as-API-proxy** — notebook → function → public API (GitHub) → notebook displays results as Spark DataFrame (`05-`)
 
 ```
 Misc/NotebookChain/
 ├── README.md                                       # this file
 ├── notebooks/                                      # Fabric notebooks (import into a workspace)
-│   ├── 01-parent-orchestrator.ipynb                #   single-call pattern
-│   ├── 02-child-call-azure-function.ipynb         #   reusable child (the "hub")
-│   ├── 03-loadbalancer-orchestrator.ipynb         #   fan-out pattern
-│   └── 04-loadgen-spoke-{A,B,C,D,E}.ipynb         #   5 parallel spokes (1,000 calls each)
+│   ├── 01-parent-orchestrator.ipynb                #   pattern 1: parent
+│   ├── 02-child-call-azure-function.ipynb          #   pattern 1: reusable child (the "hub")
+│   ├── 03-loadbalancer-orchestrator.ipynb          #   pattern 2: fan-out launcher
+│   ├── 04-loadgen-spoke-{A,B,C,D,E}.ipynb          #   pattern 2: 5 parallel spokes (1k calls each)
+│   └── 05-fetch-data-via-function.ipynb            #   pattern 3: GitHub API -> DataFrame
 └── function/                                       # the Azure Function the notebooks call
     ├── README.md                                   #   deploy + local-run instructions
-    ├── function_app.py                             #   Python v2 model, HTTP-triggered
+    ├── function_app.py                             #   Python v2: HelloWorld + GetRepoInfo + health
     ├── host.json
     ├── requirements.txt
     ├── local.settings.json.template
