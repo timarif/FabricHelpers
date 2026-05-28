@@ -17,7 +17,7 @@ class _Resp:
         return self
 
     def __exit__(self, *_exc):
-        return None
+        return False
 
 
 def test_fetch_lakehouse_tables_happy_path(monkeypatch):

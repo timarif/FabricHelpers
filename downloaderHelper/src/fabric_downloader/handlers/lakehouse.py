@@ -66,7 +66,16 @@ def fetch_lakehouse_tables(
             raise
 
         page = body if isinstance(body, dict) else {}
-        merged.extend(page.get("value") or [])
+        value = page.get("value")
+        if isinstance(value, list):
+            merged.extend(value)
+        elif value is not None:
+            log.warning(
+                "Unexpected Lakehouse tables payload for workspace=%s lakehouse=%s: value is %s",
+                workspace_id,
+                lakehouse_id,
+                type(value).__name__,
+            )
         continuation_token = page.get("continuationToken")
         continuation_uri = page.get("continuationUri")
 

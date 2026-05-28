@@ -421,12 +421,14 @@ def _download_one(
         if handler_cls is None:
             base_row["error"] = f"No handler for metadata-only type {item_type!r}."
             return base_row
-        tables_payload = fetch_lakehouse_tables(
-            workspace_id=ws_id,
-            lakehouse_id=item_id,
-            token=token,
-            fabric_base=fabric_base,
-        )
+        tables_payload = {"value": []}
+        if item_type == "Lakehouse":
+            tables_payload = fetch_lakehouse_tables(
+                workspace_id=ws_id,
+                lakehouse_id=item_id,
+                token=token,
+                fabric_base=fabric_base,
+            )
         files = handler_cls().to_files(item, {"tables": tables_payload})
         return _write_files(item_dir, files, base_row, skip_existing,
                             include_raw, {})
