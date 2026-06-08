@@ -275,7 +275,7 @@ with `run_label` so `approve_pending.py` can scope approval to this run only.
 
 ## CI integration
 
-The `.github/workflows/ci.yml` includes a `terraform` job (path-filtered to
+The `.github/workflows/ci-terraform.yml` workflow includes a `terraform` job (path-filtered to
 `mpeHelper/terraform/**`) that runs:
 
 1. `terraform fmt -check` — formatting validation
@@ -316,8 +316,10 @@ The `.github/workflows/ci.yml` includes a `terraform` job (path-filtered to
 - **`targetFQDNs` is not round-tripped.** The Fabric LIST API doesn't return
   the FQDNs supplied at create time; Terraform state stores only what the
   provider returns.
-- **Provider is in preview.** The `microsoft/fabric` provider (≥ 0.1) is
-  still preview. Pin `version = "~> 0.1"` in `versions.tf` and monitor the
+- **Provider is GA; the MPE resource is in preview.** The `microsoft/fabric`
+  provider is GA on the 1.x line, but the `fabric_workspace_managed_private_endpoint`
+  resource is still preview and requires `preview = true` in the provider block.
+  Pin `version = "~> 1.5"` in `versions.tf` and monitor the
   [provider changelog](https://github.com/microsoft/terraform-provider-fabric/releases)
   for breaking changes.
 
