@@ -70,7 +70,7 @@ def _make_part(content: dict) -> dict:
 def test_patch_part_replaces_workspace_id():
     content = {"workspaceId": "old-ws", "name": "keep"}
     part = _make_part(content)
-    new_part, changed = _patch_part(part, {"old-ws": "new-ws"})
+    new_part, changed = _patch_part(part, {"old-ws": "new-ws"}, workspace_id="new-ws")
     assert changed is True
     decoded = json.loads(base64.b64decode(new_part["payload"]))
     assert decoded["workspaceId"] == "new-ws"
@@ -80,14 +80,14 @@ def test_patch_part_replaces_workspace_id():
 def test_patch_part_no_change():
     content = {"workspaceId": "other", "name": "keep"}
     part = _make_part(content)
-    new_part, changed = _patch_part(part, {"old-ws": "new-ws"})
+    new_part, changed = _patch_part(part, {"old-ws": "new-ws"}, workspace_id="new-ws")
     assert changed is False
     assert new_part is part
 
 
 def test_patch_part_no_payload():
     part = {"path": "README.md"}
-    new_part, changed = _patch_part(part, {"old-ws": "new-ws"})
+    new_part, changed = _patch_part(part, {"old-ws": "new-ws"}, workspace_id="new-ws")
     assert changed is False
     assert new_part is part
 
@@ -97,14 +97,18 @@ def test_patch_part_non_json_payload_is_left_unchanged():
         "path": "binary.bin",
         "payload": base64.b64encode(b"\x00\x01\x02\x03").decode(),
     }
-    new_part, changed = _patch_part(part, {"old-ws": "new-ws"})
+    new_part, changed = _patch_part(part, {"old-ws": "new-ws"}, workspace_id="new-ws")
     assert changed is False
 
 
 def test_patch_part_multiple_id_substitutions():
     content = {"wsA": "ws-old-a", "wsB": "ws-old-b"}
     part = _make_part(content)
-    new_part, changed = _patch_part(part, {"ws-old-a": "ws-new-a", "ws-old-b": "ws-new-b"})
+    new_part, changed = _patch_part(
+        part,
+        {"ws-old-a": "ws-new-a", "ws-old-b": "ws-new-b"},
+        workspace_id="ws-new-a",
+    )
     assert changed is True
     decoded = json.loads(base64.b64decode(new_part["payload"]))
     assert decoded["wsA"] == "ws-new-a"
