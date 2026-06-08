@@ -264,21 +264,36 @@ class TestLakehouseHandler:
             "description": "desc",
             "properties": {"enableSchemas": True},
         }
-        files = LakehouseHandler().to_files(item, {})
+        tables_payload = {
+            "value": [
+                {
+                    "name": "sales",
+                    "type": "Managed",
+                    "format": "Delta",
+                    "location": "Tables/sales",
+                }
+            ]
+        }
+        files = LakehouseHandler().to_files(item, {"tables": tables_payload})
         assert "lakehouse_metadata.json" in files
+        assert "tables.json" in files
         meta = json.loads(files["lakehouse_metadata.json"].decode("utf-8"))
         assert meta["id"] == "lh-id"
         assert meta["displayName"] == "My Lakehouse"
         assert meta["properties"] == {"enableSchemas": True}
+        assert meta["tables"] == tables_payload["value"]
+        assert json.loads(files["tables.json"].decode("utf-8")) == tables_payload
 
-    def test_ignores_definition_body(self):
-        """LakehouseHandler never reads the definition body."""
+    def test_missing_tables_payload_defaults_to_empty_list(self):
         item = {"id": "x", "displayName": "X", "workspaceId": "ws", "type": "Lakehouse"}
-        # non-empty definition body should be silently ignored
         files = LakehouseHandler().to_files(item, {"junk": "data"})
         assert "lakehouse_metadata.json" in files
+        meta = json.loads(files["lakehouse_metadata.json"].decode("utf-8"))
+        assert meta["tables"] == []
+        assert json.loads(files["tables.json"].decode("utf-8")) == {"value": []}
 
     def test_empty_item_produces_valid_json(self):
         files = LakehouseHandler().to_files({}, {})
         meta = json.loads(files["lakehouse_metadata.json"].decode("utf-8"))
         assert meta["id"] == ""
+        assert meta["tables"] == []
